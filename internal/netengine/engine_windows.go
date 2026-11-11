@@ -48,6 +48,9 @@ foreach ($p in @('0.0.0.0/0', '0.0.0.0/1', '128.0.0.0/1')) {
         Write-Output "$($_.InterfaceAlias)|$($_.DestinationPrefix)|$metric|$desc"
     }
 }
+# A prefix without routes (usually the /1 halves) leaves $? false, which makes
+# powershell.exe -Command exit with 1 although the listing is complete.
+exit 0
 `
 
 func (e *WindowsEngine) rogueRoutes(ctx context.Context) ([]WindowsRoute, error) {

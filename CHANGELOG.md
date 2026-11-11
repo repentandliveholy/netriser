@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.5
+
+- Windows: fix the default-route listing used by route cleanup and overlay
+  quarantine. It printed the routes but always exited with status 1 when a
+  prefix had no routes (normally the /1 halves), so 1.2.3 and 1.2.4 never
+  identified a rogue overlay: a WireGuard kill-switch tunnel was not stopped.
+  Found in a live test; a read-only live test now runs the real script.
+
 ## 1.2.4
 
 - Windows: an overlay default route with a worse effective metric (route plus

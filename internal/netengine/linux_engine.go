@@ -434,9 +434,27 @@ func (e *LinuxEngine) RestartNetworkStack(ctx context.Context, b Baseline) error
 			return fmt.Errorf("NetworkManager reapply: %w", err)
 		}
 	}
-	// Refresh addresses and gateway after OS reconfiguration before writing policy.
-	if refreshed, err := e.DetectBaseline(ctx); err == nil && refreshed.Interface == b.Interface {
-		b = refreshed
+	// DHCP is asynchronous: reconfigure can return before an address and gateway
+	// exist. Wait for a complete live baseline instead of reporting a false
+	// failure or installing routes for an address which is no longer assigned.
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		refreshed, err := e.DetectBaseline(waitCtx)
+		if err == nil && refreshed.Interface == b.Interface {
+			b = refreshed
+			break
+		}
+		// A complete caller baseline is still useful for an unmanaged static WAN,
+		// but only while that exact address remains assigned to the interface.
+		if b.IsValid() && e.getDeviceIPv4(waitCtx, b.Interface) == b.IP {
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("waiting for %s IPv4 address and gateway: %w", b.Interface, waitCtx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 	// The OS manager does not restore our separate policy table.
 	if err := validateLinuxBaseline(b); err != nil {

@@ -6,3 +6,4 @@ dist/
 ops/
 test-results/
 FLEET_STATUS.json
+__pycache__/

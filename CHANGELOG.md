@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.1
+
+- Ask about automatic updates and emergency reboot during installation, including
+  Unix pipe installation; support explicit unattended choices and preserve existing settings.
+- Create a complete config on a fresh install and report all installation steps,
+  selected settings, backup location and service verification.
+- Recover on a 15-second outage cadence with consecutive stage 1/2/3 defaults,
+  retaining the normal 60-second healthy cadence and explicit existing thresholds.
+- Require 300 seconds of measured continuous outage before enabled emergency
+  reboot, independently of check frequency, while preserving budget and grace checks.
+- Wait for asynchronous DHCP before verifying routes after network reconfiguration.
+- Reload default auto-update configuration consistently even when the default
+  file is missing; explicit missing configuration remains an error.
+
 ## 1.2.0 — NetRiser
 
 - Rename the application, service, module and distribution to NetRiser.

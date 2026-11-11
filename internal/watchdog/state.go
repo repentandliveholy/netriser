@@ -28,6 +28,7 @@ type ServiceQuarantineRecord struct {
 type WatchdogState struct {
 	Version             int                       `json:"version"`
 	FailCount           int                       `json:"fail_count"`
+	FirstFailedAt       time.Time                 `json:"first_failed_at,omitempty"`
 	LastFailedAt        time.Time                 `json:"last_failed_at,omitempty"`
 	Baseline            netengine.Baseline        `json:"baseline"`
 	QuarantinedServices []ServiceQuarantineRecord `json:"quarantined_services,omitempty"`

@@ -163,6 +163,48 @@ func TestLinuxRecoveryReconfiguresNetworkdAndBothTables(t *testing.T) {
 		t.Fatal("network restart error hidden")
 	}
 }
+
+func TestLinuxRecoveryWaitsForAsynchronousDHCP(t *testing.T) {
+	e, r, saved := linuxFixture(t)
+	if err := SaveBaseline(e.cfg.StateDir, saved); err != nil {
+		t.Fatal(err)
+	}
+	r.replies["ip -j -4 addr show dev eth0"] = `[]`
+	queries := 0
+	r.hook = func(cmd string) {
+		if cmd == "ip -j -4 addr show dev eth0" {
+			queries++
+			if queries >= 4 {
+				r.replies[cmd] = `[{"addr_info":[{"family":"inet","local":"198.51.100.20","scope":"global"}]}]`
+			}
+		}
+		if strings.HasPrefix(cmd, "ip route replace") && queries < 4 {
+			t.Fatal("wrote routes before DHCP completed")
+		}
+	}
+	if err := e.RestartNetworkStack(context.Background(), Baseline{Interface: "eth0", Source: BaselineSourceCached}); err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Join(r.calls, "\n")
+	if !strings.Contains(calls, "ip route replace default via 192.168.0.1 dev eth0 table 200 onlink") {
+		t.Fatal("policy routing not restored after DHCP")
+	}
+}
+
+func TestLinuxRecoveryCancellationNeverWritesAddresslessRoutes(t *testing.T) {
+	e, r, _ := linuxFixture(t)
+	r.replies["ip -j -4 addr show dev eth0"] = `[]`
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := e.RestartNetworkStack(ctx, Baseline{Interface: "eth0"}); err == nil {
+		t.Fatal("addressless recovery reported success")
+	}
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, "ip route replace") || strings.HasPrefix(call, "ip rule add") {
+			t.Fatalf("wrote routes without an address: %s", call)
+		}
+	}
+}
 func TestLinuxQuarantinePreservesUnrelatedOverlays(t *testing.T) {
 	for _, scenario := range []string{"WAN outage", "netbird hijack", "authorized exit", "WAN down", "unknown WAN"} {
 		t.Run(scenario, func(t *testing.T) {

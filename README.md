@@ -34,6 +34,23 @@ Downloads, checksums, and release metadata are available from the
 [distribution page](https://netriser.repentandliveholy.org). Source and release
 history are published at [GitHub](https://github.com/repentandliveholy/netriser).
 
+The installer prints download, checksum, backup, configuration and service
+steps. It asks whether to enable automatic updates (default: yes) and emergency
+host reboot (default: no). Unix prompts read from the terminal, including with
+`curl | sh`. On a rerun, Enter preserves the existing choices and custom settings.
+A fresh installation always creates a complete configuration file.
+
+For unattended Unix installation, set choices on the `sh` process:
+
+```sh
+curl -fsSL https://netriser.repentandliveholy.org/install.sh | \
+  NETRISER_NONINTERACTIVE=1 NETRISER_AUTO_UPDATE=true NETRISER_ENABLE_REBOOT=false sh
+```
+
+PowerShell uses the same `NETRISER_NONINTERACTIVE`, `NETRISER_AUTO_UPDATE` and
+`NETRISER_ENABLE_REBOOT` environment variables. Without a terminal, fresh installs
+use updates on and reboot off; existing settings are preserved unless overridden.
+
 ## Migration from Mesh Watchdog
 
 The 1.2.0 installers stop and disable the legacy service before migration. They
@@ -73,10 +90,19 @@ Important settings:
 | `allow_network_restart` | Permit supported network-stack recovery. |
 | `enable_reboot` | Permit emergency host reboot. Defaults to `false`. |
 | `auto_update`, `update_url` | Control update checks and the distribution endpoint. |
+| `check_interval_sec`, `recovery_interval_sec` | Wait after a completed check: 60 seconds while healthy, 15 seconds during an IP outage. |
+| `reboot_min_outage_sec` | Require a measured continuous outage before an enabled reboot; defaults to 300 seconds. |
 
 Set only recovery actions appropriate for the host. Emergency reboot is
 disabled by default and should remain disabled unless unattended reboot is an
 explicit operational requirement.
+
+With fresh defaults, recovery stages 1, 2 and 3 occur on consecutive failed
+checks, separated by 15 seconds plus probe/action time. Initial outage detection
+can take up to the normal monitoring interval plus probe time. Existing explicit
+stage thresholds are retained. Reboot additionally requires the configured
+minimum outage, startup grace, final connectivity check and reboot budget;
+DNS-only failure never triggers reboot.
 
 ## DNS recovery
 
@@ -92,6 +118,7 @@ not trigger overlay quarantine, WAN restarts or emergency reboot.
 netriser status
 nr status                    # same application, short command
 netriser check-config
+netriser init-config         # create defaults if missing; keep an existing config
 netriser run                 # foreground mode
 netriser service install     # install or update the system service
 netriser service stop
@@ -102,6 +129,16 @@ netriser autoupdate off
 The `--config PATH` flag can be used before the command, for example:
 `netriser --config /path/to/config.yaml status`. Use `netriser --help` for the
 complete command list. On Linux, service installation requires systemd.
+
+## License
+
+NetRiser is licensed under the [MIT License](LICENSE).
+Copyright (c) 2026 Muslim Bayraktar.
+
+Third-party components retain their own licenses. Their copyright notices and
+license texts are included in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+Installers place both files in `/usr/local/share/doc/netriser` on Linux/macOS,
+or the `licenses` directory beside `netriser.exe` on Windows.
 
 ## Build
 

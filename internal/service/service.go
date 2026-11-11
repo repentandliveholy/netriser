@@ -37,8 +37,8 @@ func RunDaemonLoop(ctx context.Context, w *watchdog.Watchdog, cfg *config.Config
 	report, err := w.RunCheckCycle(ctx)
 	healthy.Store(err == nil && report != nil && report.Healthy)
 
-	ticker := time.NewTicker(cfg.CheckInterval())
-	defer ticker.Stop()
+	timer := time.NewTimer(nextCheckDelay(cfg, report, err))
+	defer timer.Stop()
 
 	for {
 		select {
@@ -47,12 +47,22 @@ func RunDaemonLoop(ctx context.Context, w *watchdog.Watchdog, cfg *config.Config
 		case sig := <-sigChan:
 			fmt.Printf("Received signal %v, terminating watchdog daemon...\n", sig)
 			return nil
-		case <-ticker.C:
+		case <-timer.C:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			report, err := w.RunCheckCycle(ctx)
 			healthy.Store(err == nil && report != nil && report.Healthy)
+			timer.Reset(nextCheckDelay(cfg, report, err))
 		}
 	}
+}
+
+// Schedule from completion: slow remediation never queues an immediate next
+// stage, and healthy cycles resume the normal monitoring interval.
+func nextCheckDelay(cfg *config.Config, report *watchdog.CheckReport, err error) time.Duration {
+	if err == nil && report != nil && !report.Healthy && report.FailCount > 0 && cfg.RecoveryIntervalSec > 0 {
+		return time.Duration(cfg.RecoveryIntervalSec) * time.Second
+	}
+	return cfg.CheckInterval()
 }

@@ -25,8 +25,9 @@ type Config struct {
 	AllowDNSRecovery bool     `yaml:"allow_dns_recovery"`
 
 	// Timing
-	CheckIntervalSec int `yaml:"check_interval_sec"`
-	ProbeTimeoutSec  int `yaml:"probe_timeout_sec"`
+	CheckIntervalSec    int `yaml:"check_interval_sec"`
+	RecoveryIntervalSec int `yaml:"recovery_interval_sec"`
+	ProbeTimeoutSec     int `yaml:"probe_timeout_sec"`
 
 	// Physical network overrides (empty = auto-detect)
 	ManagementInterface string `yaml:"management_interface"`
@@ -54,6 +55,7 @@ type Config struct {
 
 	// Emergency reboot settings
 	EnableReboot          bool `yaml:"enable_reboot"`
+	RebootMinOutageSec    int  `yaml:"reboot_min_outage_sec"`
 	RebootGraceSec        int  `yaml:"reboot_grace_sec"`
 	RebootBudgetCount     int  `yaml:"reboot_budget_count"`
 	RebootBudgetWindowSec int  `yaml:"reboot_budget_window_sec"`
@@ -85,6 +87,7 @@ func DefaultConfig() *Config {
 		AllowDNSRecovery:      true,
 		MeshCanaries:          []string{},
 		CheckIntervalSec:      60,
+		RecoveryIntervalSec:   15,
 		ProbeTimeoutSec:       3,
 		ManagementInterface:   "",
 		ManagementGateway:     "",
@@ -98,14 +101,15 @@ func DefaultConfig() *Config {
 			"tailscaled",
 		},
 		FailThresholdStage1:       1,
-		FailThresholdStage2:       3,
-		FailThresholdStage3:       4,
+		FailThresholdStage2:       2,
+		FailThresholdStage3:       3,
 		FailThresholdStage4Reboot: 5,
 		ObservationMode:           false,
 		AllowRouteSanitation:      true,
 		AllowServiceQuarantine:    true,
 		AllowNetworkRestart:       true,
 		EnableReboot:              false, // Safe default: disabled by default
+		RebootMinOutageSec:        300,
 		RebootGraceSec:            15,
 		RebootBudgetCount:         1,    // Max 1 reboot per window
 		RebootBudgetWindowSec:     3600, // 1 hour window
@@ -161,6 +165,12 @@ func DefaultConfigPath() string {
 
 // Validate performs strict validation of the configuration parameters.
 func (c *Config) Validate() error {
+	if c.RecoveryIntervalSec <= 0 {
+		return fmt.Errorf("recovery_interval_sec must be positive")
+	}
+	if c.RebootMinOutageSec < 0 {
+		return fmt.Errorf("reboot_min_outage_sec must not be negative")
+	}
 	if c.CheckIntervalSec <= 0 {
 		return fmt.Errorf("check_interval_sec must be positive, got %d", c.CheckIntervalSec)
 	}

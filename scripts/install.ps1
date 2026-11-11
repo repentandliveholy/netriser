@@ -8,6 +8,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $DistUrl = if ($env:NETRISER_URL) { $env:NETRISER_URL } elseif ($env:WATCHDOG_URL) { $env:WATCHDOG_URL } else { 'https://netriser.repentandliveholy.org' }
 $BinDir = Join-Path $env:ProgramFiles 'NetRiser'
 $BinPath = Join-Path $BinDir 'netriser.exe'
+$LicenseDir = Join-Path $BinDir 'licenses'
 $StagePath = Join-Path $BinDir ".netriser-$([guid]::NewGuid().ToString('N')).new"
 $LegacyDir = Join-Path $env:ProgramFiles 'mesh-watchdog'
 $LegacyPath = Join-Path $LegacyDir 'mesh-watchdog.exe'
@@ -20,7 +21,7 @@ $LegacyService = Get-CimInstance Win32_Service -Filter "Name='mesh-watchdog'" -E
 $NewService = Get-CimInstance Win32_Service -Filter "Name='netriser'" -ErrorAction SilentlyContinue
 $LegacyWasRunning = $LegacyService -and $LegacyService.State -eq 'Running'
 $NewWasRunning = $NewService -and $NewService.State -eq 'Running'
-$LegacyConfig = $null
+$LegacyConfig = $env:CONF_FILE
 $Backup = $null
 $Mutating = $false
 $MachinePathBefore = $null
@@ -28,7 +29,7 @@ $ProcessPathBefore = $env:Path
 $MachinePathChanged = $false
 $ProcessPathChanged = $false
 
-if ($LegacyService -and $LegacyService.PathName -match '--config(?:=|\s+)(?:"([^"]+)"|(\S+))') {
+if (-not $LegacyConfig -and $LegacyService -and $LegacyService.PathName -match '--config(?:=|\s+)(?:"([^"]+)"|(\S+))') {
     $LegacyConfig = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
 }
 if (-not $LegacyConfig -and $NewService -and $NewService.PathName -match '--config(?:=|\s+)(?:"([^"]+)"|(\S+))') {
@@ -42,6 +43,29 @@ function Copy-BackupPath([string]$Path) {
         $parent = Split-Path -Parent $destination
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
         Copy-Item -LiteralPath $Path -Destination $destination -Recurse -Force
+    }
+}
+function Choose-Setting([string]$Label, [string]$Supplied, [string]$Fallback) {
+    if ($Supplied) {
+        switch ($Supplied.ToLowerInvariant()) {
+            { $_ -in @('true', 'yes', 'y', '1', 'on') } { return 'true' }
+            { $_ -in @('false', 'no', 'n', '0', 'off') } { return 'false' }
+            default { throw "Invalid setting for ${Label}: use true or false." }
+        }
+    }
+    if ($env:NETRISER_NONINTERACTIVE -eq '1' -or -not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Write-Host "${Label}: no interactive prompt; using $Fallback (keep = preserve existing setting)."
+        return $Fallback
+    }
+    $hint = switch ($Fallback) { 'true' { 'Y/n' }; 'false' { 'y/N' }; 'keep' { 'y/n, Enter = keep current setting' } }
+    while ($true) {
+        $reply = Read-Host "$Label [$hint]"
+        switch ($reply.ToLowerInvariant()) {
+            '' { return $Fallback }
+            { $_ -in @('y', 'yes') } { return 'true' }
+            { $_ -in @('n', 'no') } { return 'false' }
+            default { Write-Host 'Please answer y or n (or Enter for the default).' }
+        }
     }
 }
 function Restore-BackupPath([string]$Path) {
@@ -66,7 +90,7 @@ function Rollback-Install {
     Write-Warning "Installation failed; restoring previous files and service state from $Backup"
     Stop-Service netriser -Force -ErrorAction SilentlyContinue
     if (-not $NewService) { & sc.exe delete netriser | Out-Null }
-    foreach ($path in @($BinPath, (Join-Path $BinDir 'nr.cmd'), (Join-Path $BinDir 'mesh-watchdog.cmd'), $NewData, $LegacyData, $LegacyPath, $LegacyConfig)) {
+    foreach ($path in @($LicenseDir, $BinPath, (Join-Path $BinDir 'nr.cmd'), (Join-Path $BinDir 'mesh-watchdog.cmd'), $NewData, $LegacyData, $LegacyPath, $LegacyConfig)) {
         Restore-BackupPath $path
     }
     if ($NewWasRunning) { Start-Service netriser -ErrorAction SilentlyContinue }
@@ -76,28 +100,48 @@ function Rollback-Install {
 }
 
 try {
+    Write-Host '[1/8] NetRiser installation for windows/amd64; administrator access confirmed'
     New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
     $asset = 'netriser-windows-amd64.exe'
     $base = $DistUrl.TrimEnd('/')
-    $ProgressPreference = 'SilentlyContinue'
+    Write-Host "[2/8] Downloading binary: $base/bin/$asset"
     Invoke-WebRequest -Uri "$base/bin/$asset" -OutFile $TempPath
+    Write-Host '[2/8] Downloading MIT license and third-party notices'
+    foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES')) {
+        Invoke-WebRequest -Uri "$base/$name" -OutFile (Join-Path $TempDir $name)
+    }
     $sumsPath = Join-Path $TempDir 'sha256sums.txt'
+    Write-Host '[3/8] Downloading checksums and verifying SHA-256'
     Invoke-WebRequest -Uri "$base/sha256sums.txt" -OutFile $sumsPath
     $sumLine = Get-Content $sumsPath | Where-Object { $_ -match "\s+$([regex]::Escape($asset))$" } | Select-Object -First 1
     if (-not $sumLine -or $sumLine -notmatch '^([0-9a-fA-F]{64})\s+') { throw "No valid SHA-256 entry for $asset in sha256sums.txt." }
     $expectedHash = $Matches[1].ToLowerInvariant()
     $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $TempPath).Hash.ToLowerInvariant()
     if ($actualHash -ne $expectedHash) { throw 'Downloaded binary SHA-256 does not match the release checksum.' }
-    $ProgressPreference = 'Continue'
+    Write-Host '[4/8] Detecting existing services and configuration'
+    & $TempPath version
+    if ($LASTEXITCODE -ne 0) { throw 'Downloaded binary could not run.' }
+    $EffectiveConfig = if ($LegacyConfig) { $LegacyConfig } else { Join-Path $NewData 'config.yaml' }
+    $AutoDefault = 'true'
+    $RebootDefault = 'false'
+    if ((Test-Path -LiteralPath $EffectiveConfig) -or (Test-Path -LiteralPath (Join-Path $LegacyData 'config.yaml')) -or (Test-Path -LiteralPath (Join-Path $LegacyData 'state'))) {
+        $AutoDefault = 'keep'
+        $RebootDefault = 'keep'
+    }
+    $AutoChoice = Choose-Setting 'Enable automatic updates' $env:NETRISER_AUTO_UPDATE $AutoDefault
+    $RebootChoice = Choose-Setting 'Allow emergency host reboot (off by default; fresh installs wait at least 5 minutes)' $env:NETRISER_ENABLE_REBOOT $RebootDefault
+    Write-Host "Installation choices: automatic updates=$AutoChoice; emergency reboot=$RebootChoice"
 
     $Backup = Join-Path $ProgramData "NetRiser-Backups\migration-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))-$([guid]::NewGuid().ToString('N'))"
+    Write-Host "[5/8] Saving rollback backup: $Backup"
     New-Item -ItemType Directory -Path $Backup -Force | Out-Null
-    foreach ($path in @($BinPath, (Join-Path $BinDir 'nr.cmd'), (Join-Path $BinDir 'mesh-watchdog.cmd'), $LegacyPath, $NewData, $LegacyData, $LegacyConfig)) { Copy-BackupPath $path }
+    foreach ($path in @($LicenseDir, $BinPath, (Join-Path $BinDir 'nr.cmd'), (Join-Path $BinDir 'mesh-watchdog.cmd'), $LegacyPath, $NewData, $LegacyData, $LegacyConfig)) { Copy-BackupPath $path }
     if ($LegacyService) { & reg.exe export 'HKLM\SYSTEM\CurrentControlSet\Services\mesh-watchdog' (Join-Path $Backup 'legacy-service.reg') /y | Out-Null }
     if ($NewService) { & reg.exe export 'HKLM\SYSTEM\CurrentControlSet\Services\netriser' (Join-Path $Backup 'netriser-service.reg') /y | Out-Null }
 
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
     $Mutating = $true
+    Write-Host '[6/8] Stopping existing daemon and installing verified binary'
     if ($NewWasRunning) { Stop-Service netriser -Force }
     if ($LegacyWasRunning) { Stop-Service mesh-watchdog -Force }
     if ($LegacyService) { Set-Service mesh-watchdog -StartupType Disabled }
@@ -108,6 +152,10 @@ try {
     } else {
         Move-Item -LiteralPath $StagePath -Destination $BinPath
     }
+    New-Item -ItemType Directory -Path $LicenseDir -Force | Out-Null
+    foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES')) {
+        Copy-Item -LiteralPath (Join-Path $TempDir $name) -Destination (Join-Path $LicenseDir $name) -Force
+    }
 
     if ($LegacyConfig) {
         & $BinPath --config $LegacyConfig migrate
@@ -116,6 +164,14 @@ try {
     }
     if ($LASTEXITCODE -ne 0) { throw "Configuration migration failed (exit $LASTEXITCODE)." }
 
+    Write-Host "[7/8] Creating or preserving configuration: $EffectiveConfig"
+    $initArgs = @('--config', $EffectiveConfig, 'init-config')
+    if ($AutoChoice -ne 'keep') { $initArgs += "--auto-update=$AutoChoice" }
+    if ($RebootChoice -ne 'keep') { $initArgs += "--enable-reboot=$RebootChoice" }
+    & $BinPath @initArgs
+    if ($LASTEXITCODE -ne 0) { throw "Configuration initialization failed (exit $LASTEXITCODE)." }
+
+    Write-Host '[8/8] Starting NetRiser and verifying service state'
     if ($NewService) {
         Restart-Service netriser -ErrorAction Stop
     } elseif ($LegacyConfig) {
@@ -152,6 +208,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Could not retire the stopped legacy service (exit $LASTEXITCODE)." }
     }
     Write-Host "NetRiser installed. Migration backup: $Backup" -ForegroundColor Green
+    Write-Host "License: MIT; license texts installed in $LicenseDir"
+    Write-Host 'Commands: nr status; nr autoupdate on|off|status; nr reboot on|off|status'
+    Write-Host "Logs: $(Join-Path $NewData 'logs\netriser.log') (legacy/custom paths are preserved)"
 } catch {
     Rollback-Install
     throw

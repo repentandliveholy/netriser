@@ -198,7 +198,8 @@ func setupTestWatchdog(t *testing.T) (*Watchdog, *config.Config, *mockEngine, *f
 	cfg.LogFile = filepath.Join(tmpDir, "test.log")
 	cfg.CanaryTargets = []string{"1.1.1.1:53"}
 	cfg.ProbeTimeoutSec = 1
-	cfg.StartupGraceSec = 0 // disabled in basic tests unless tested explicitly
+	cfg.StartupGraceSec = 0    // disabled in basic tests unless tested explicitly
+	cfg.RebootMinOutageSec = 0 // individual reboot tests control this explicitly
 
 	mock := &mockEngine{}
 	fChecker := &fakeChecker{
@@ -866,7 +867,8 @@ func TestKnownAddresslessWANCanReconfigureButCannotChangeRoutes(t *testing.T) {
 }
 
 func TestExpiredQuarantineIgnoresLongBackoffAndDoesNotStarveOtherServices(t *testing.T) {
-	w, _, engine, _ := setupTestWatchdog(t)
+	w, cfg, engine, _ := setupTestWatchdog(t)
+	cfg.AllowServiceQuarantine = false // Test release fairness without creating new quarantines.
 	old := w.clock.Now().Add(-11 * time.Minute)
 	w.stateMgr.SaveState(&WatchdogState{Version: CurrentStateVersion, QuarantinedServices: []ServiceQuarantineRecord{
 		{Name: "broken", QuarantinedAt: old, NextRetryAfter: w.clock.Now().Add(2 * time.Hour)},

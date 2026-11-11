@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,22 +17,24 @@ import (
 )
 
 var (
-	Version   = "1.2.0"
+	Version   = "1.2.1"
 	Commit    = "unknown"
 	BuildTime = "unknown"
 )
 
 type cliOptions struct {
-	confPath   string
-	verbose    bool
-	jsonOutput bool
-	dryRun     bool
-	version    bool
-	help       bool
-	force      bool
-	checkOnly  bool
-	updateURL  string
-	commands   []string
+	confPath          string
+	verbose           bool
+	jsonOutput        bool
+	dryRun            bool
+	version           bool
+	help              bool
+	force             bool
+	checkOnly         bool
+	updateURL         string
+	installAutoUpdate string
+	installReboot     string
+	commands          []string
 }
 
 func parseCLIArgs(args []string) cliOptions {
@@ -39,6 +42,10 @@ func parseCLIArgs(args []string) cliOptions {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case strings.HasPrefix(arg, "--auto-update="):
+			opts.installAutoUpdate = strings.TrimPrefix(arg, "--auto-update=")
+		case strings.HasPrefix(arg, "--enable-reboot="):
+			opts.installReboot = strings.TrimPrefix(arg, "--enable-reboot=")
 		case arg == "-h" || arg == "--help":
 			opts.help = true
 		case arg == "-v" || arg == "--verbose":
@@ -101,6 +108,7 @@ Commands:
   diagnose           Generate and display deep diagnostic dump
   simulate-hijack    Safely test route hijack remediation (with 45s safety rollback)
   migrate            Preserve legacy configuration and state paths
+  init-config        Create configuration; preserve existing settings unless overridden
   service <cmd>      Manage OS service (install, uninstall, start, stop, restart, status)
   apply-policy       Enforce management policy routing (Table 200 on Linux)
   remove-policy      Remove custom management policy routing rules
@@ -114,6 +122,8 @@ Flags:
   --check               Check for updates without downloading or applying (with 'update')
   --force               Force reinstall latest version (with 'update')
   --update-url string   Override update server base URL (with 'update')
+  --auto-update=bool    Select automatic updates (with 'init-config')
+  --enable-reboot=bool  Select emergency reboot (with 'init-config')
   -v, --verbose         Enable verbose console logging (routed to stderr with --json)
   -h, --help            Show this help message
   -V, --version         Print version information
@@ -128,7 +138,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	if opts.version {
+	if opts.version || (len(opts.commands) > 0 && opts.commands[0] == "version") {
 		if opts.jsonOutput {
 			fmt.Printf(`{"version":%q,"commit":%q,"build_time":%q}`+"\n", Version, Commit, BuildTime)
 		} else {
@@ -148,6 +158,29 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("Legacy configuration preserved. Install the NetRiser service after stopping the legacy daemon.")
+		return
+	}
+	if cmd == "init-config" {
+		autoUpdate, err := optionalBool(opts.installAutoUpdate)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Invalid --auto-update:", err)
+			os.Exit(1)
+		}
+		reboot, err := optionalBool(opts.installReboot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Invalid --enable-reboot:", err)
+			os.Exit(1)
+		}
+		cfg, err := config.Initialize(opts.confPath, autoUpdate, reboot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Configuration initialization failed:", err)
+			os.Exit(1)
+		}
+		path := opts.confPath
+		if path == "" {
+			path = config.DefaultConfigPath()
+		}
+		fmt.Printf("Configuration: %s\nAutomatic updates: %t\nEmergency reboot: %t\nChecks: %ds healthy / %ds during outage\nMinimum outage before reboot: %ds\n", path, cfg.AutoUpdate, cfg.EnableReboot, cfg.CheckIntervalSec, cfg.RecoveryIntervalSec, cfg.RebootMinOutageSec)
 		return
 	}
 
@@ -709,4 +742,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Unknown command '%s'. Run 'netriser --help' for usage.\n", cmd)
 		os.Exit(1)
 	}
+}
+
+func optionalBool(value string) (*bool, error) {
+	if value == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseBool(value)
+	return &v, err
 }

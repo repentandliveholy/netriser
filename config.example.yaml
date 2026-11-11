@@ -23,6 +23,7 @@ allow_dns_recovery: true  # Linux: restore the last healthy resolver; DNS recove
 
 # Polling and probe timeouts, in seconds.
 check_interval_sec: 60
+recovery_interval_sec: 15 # Wait between completed checks during an IP outage.
 probe_timeout_sec: 3
 
 # Optional physical interface and gateway overrides (empty means auto-detect).
@@ -43,8 +44,8 @@ monitored_services:
 
 # Escalation thresholds are consecutive failed checks.
 fail_threshold_stage1: 1         # Targeted route cleanup.
-fail_threshold_stage2: 3         # Quarantine a matching mesh service.
-fail_threshold_stage3: 4         # Restart supported network components.
+fail_threshold_stage2: 2         # Quarantine a matching mesh service.
+fail_threshold_stage3: 3         # Restart supported network components.
 fail_threshold_stage4_reboot: 5  # Emergency host reboot, if enabled.
 
 # Observation mode logs failures without applying recovery actions.
@@ -55,6 +56,7 @@ allow_network_restart: true
 
 # Emergency reboot is disabled unless explicitly enabled.
 enable_reboot: false
+reboot_min_outage_sec: 300       # Measured continuous outage; independent of failure count.
 reboot_grace_sec: 15
 reboot_budget_count: 1
 reboot_budget_window_sec: 3600

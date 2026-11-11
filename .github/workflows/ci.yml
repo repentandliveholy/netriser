@@ -29,6 +29,9 @@ jobs:
       - name: Run Tests with Race Detector
         run: go test -v -race ./...
 
+      - name: Installer pipe, terminal, settings and rollback tests
+        run: python3 -m unittest discover -s tests -v
+
   build:
     name: Multi-Target Build
     needs: test

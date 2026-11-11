@@ -63,7 +63,6 @@ func NewWatchdog(cfg *config.Config, verbose bool) *Watchdog {
 
 	return &Watchdog{
 		cfg:           cfg,
-		configPath:    config.DefaultConfigPath(),
 		engine:        engine,
 		checker:       checker,
 		clock:         clock,
@@ -87,7 +86,6 @@ func NewWatchdogWithDeps(cfg *config.Config, engine netengine.NetworkEngine, che
 
 	return &Watchdog{
 		cfg:           cfg,
-		configPath:    config.DefaultConfigPath(),
 		engine:        engine,
 		checker:       checker,
 		clock:         clock,
@@ -154,10 +152,15 @@ func (w *Watchdog) writeFailCount(count int) error {
 	if err != nil || state == nil {
 		state = &WatchdogState{Version: CurrentStateVersion}
 	}
-	state.FailCount = count
 	if count > 0 {
+		if state.FailCount == 0 || state.FirstFailedAt.IsZero() {
+			state.FirstFailedAt = w.clock.Now()
+		}
 		state.LastFailedAt = w.clock.Now()
+	} else {
+		state.FirstFailedAt = time.Time{}
 	}
+	state.FailCount = count
 	return w.stateMgr.SaveState(state)
 }
 
@@ -457,6 +460,7 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 
 	rebootWindow := time.Duration(w.cfg.RebootBudgetWindowSec) * time.Second
 	rebootAllowed, budgetReason := w.rebootTracker.CanReboot(w.cfg.RebootBudgetCount, rebootWindow)
+	rebootAllowed, budgetReason = w.guardRebootOutage(state, rebootAllowed, budgetReason)
 
 	actionBaseline := baseline
 	if bErr != nil {
@@ -654,8 +658,19 @@ func (w *Watchdog) restartNetwork(ctx context.Context, b netengine.Baseline) net
 	if err := w.engine.RestartNetworkStack(ctx, b); err != nil {
 		act.Status = netengine.ActionFailed
 		act.Error = err.Error()
+		act.Description = "Physical network recovery did not complete"
 	}
 	return act
+}
+
+// Failure counts must not make reboot faster when the recovery cadence changes.
+// Unknown legacy outage start times require a fresh measured outage window.
+func (w *Watchdog) guardRebootOutage(state *WatchdogState, allowed bool, reason string) (bool, string) {
+	minimum := time.Duration(w.cfg.RebootMinOutageSec) * time.Second
+	if minimum > 0 && (state == nil || state.FirstFailedAt.IsZero() || w.clock.Now().Sub(state.FirstFailedAt) < minimum) {
+		return false, fmt.Sprintf("continuous outage shorter than reboot_min_outage_sec (%ds)", w.cfg.RebootMinOutageSec)
+	}
+	return allowed, reason
 }
 
 // ConfigPath returns the explicit path for helpers; empty selects OS defaults.
@@ -668,6 +683,9 @@ type StatusReport struct {
 	PolicyRoutingPriority int                       `json:"policy_routing_priority"`
 	AutoUpdate            bool                      `json:"auto_update"`
 	AutoUpdateIntervalSec int                       `json:"auto_update_interval_sec"`
+	CheckIntervalSec      int                       `json:"check_interval_sec"`
+	RecoveryIntervalSec   int                       `json:"recovery_interval_sec"`
+	RebootMinOutageSec    int                       `json:"reboot_min_outage_sec"`
 	EnableReboot          bool                      `json:"enable_reboot"`
 	RebootBudget24h       int                       `json:"reboot_budget_24h"`
 	RecentReboots24h      int                       `json:"recent_reboots_24h"`
@@ -727,6 +745,9 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		EnableReboot:          w.cfg.EnableReboot,
 		AutoUpdate:            w.cfg.AutoUpdate,
 		AutoUpdateIntervalSec: w.cfg.AutoUpdateIntervalSec,
+		CheckIntervalSec:      w.cfg.CheckIntervalSec,
+		RecoveryIntervalSec:   w.cfg.RecoveryIntervalSec,
+		RebootMinOutageSec:    w.cfg.RebootMinOutageSec,
 		RebootBudget24h:       w.cfg.RebootBudgetCount,
 		RecentReboots24h:      recentReboots,
 		ObservationMode:       w.cfg.ObservationMode,
@@ -899,6 +920,7 @@ func (w *Watchdog) EvaluateDryRun(ctx context.Context) (*DryRunReport, error) {
 	}
 	rebootWindow := time.Duration(w.cfg.RebootBudgetWindowSec) * time.Second
 	rebootAllowed, budgetReason := w.rebootTracker.CanReboot(w.cfg.RebootBudgetCount, rebootWindow)
+	rebootAllowed, budgetReason = w.guardRebootOutage(state, rebootAllowed, budgetReason)
 
 	actionBaseline := baseline
 	if baselineErr != nil {

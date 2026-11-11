@@ -80,7 +80,7 @@ func DecideEscalation(
 		if !rebootAllowed {
 			return EscalationDecision{
 				Stage:         4,
-				Reason:        fmt.Sprintf("Stage 4 reached at failure count %d, but reboot budget exhausted", failCount),
+				Reason:        fmt.Sprintf("Stage 4 reached at failure count %d, but emergency reboot is not yet allowed: %s", failCount, rebootBudgetReason),
 				ActionAllowed: false,
 				ActionType:    netengine.ActionReboot,
 				SkipReason:    rebootBudgetReason,

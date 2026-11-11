@@ -12,6 +12,11 @@ func TestParseCLIArgs(t *testing.T) {
 		expected cliOptions
 	}{
 		{
+			name:     "installer configuration choices",
+			args:     []string{"init-config", "--auto-update=false", "--enable-reboot=true", "--config", "/tmp/custom.yaml"},
+			expected: cliOptions{commands: []string{"init-config"}, installAutoUpdate: "false", installReboot: "true", confPath: "/tmp/custom.yaml"},
+		},
+		{
 			name: "default command",
 			args: []string{},
 			expected: cliOptions{
@@ -38,10 +43,10 @@ func TestParseCLIArgs(t *testing.T) {
 			name: "config with space and dry-run",
 			args: []string{"check", "--config", "/etc/mesh.yaml", "--dry-run", "-v"},
 			expected: cliOptions{
-				confPath:   "/etc/mesh.yaml",
-				dryRun:     true,
-				verbose:    true,
-				commands:   []string{"check"},
+				confPath: "/etc/mesh.yaml",
+				dryRun:   true,
+				verbose:  true,
+				commands: []string{"check"},
 			},
 		},
 		{

@@ -10,6 +10,7 @@ case "$ARCH_RAW" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) 
 if [ "$OS" = linux ]; then BIN_DIR=/usr/local/sbin; else BIN_DIR=/usr/local/bin; fi
 BIN="$BIN_DIR/netriser"
 LEGACY_BIN=/usr/local/bin/mesh-watchdog
+DOC_DIR=/usr/local/share/doc/netriser
 LEGACY_MAIN=mesh-watchdog.service
 LEGACY_POLICY=mesh-watchdog-policy.service
 LEGACY_POLICY_OVERRIDE=""
@@ -33,9 +34,44 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 run_root() { if [ -n "$SUDO" ]; then sudo "$@"; else "$@"; fi; }
 fetch() {
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
-  elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
+  if command -v curl >/dev/null 2>&1; then curl -fL --progress-bar "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then wget -O "$2" "$1"
   else echo 'Install curl or wget and retry.' >&2; return 1; fi
+}
+
+# stdin contains the installer when invoked as curl | sh. Never read answers
+# from it: use the controlling terminal and leave the rest of the script intact.
+choose_setting() {
+  label="$1"; supplied="$2"; fallback="$3"
+  case "$supplied" in
+    true|yes|y|1|on) printf 'true\n'; return ;;
+    false|no|n|0|off) printf 'false\n'; return ;;
+    '') ;;
+    *) echo "Invalid setting for $label: use true or false." >&2; return 1 ;;
+  esac
+  if [ "${NETRISER_NONINTERACTIVE:-0}" = 1 ] || ! ( : <>/dev/tty ) 2>/dev/null; then
+    echo "$label: no interactive prompt; using $fallback (keep = preserve existing setting)." >&2
+    printf '%s\n' "$fallback"
+    return
+  fi
+  case "$fallback" in
+    true) hint='Y/n' ;;
+    false) hint='y/N' ;;
+    keep) hint='y/n, Enter = keep current setting' ;;
+  esac
+  while :; do
+    printf '%s [%s]: ' "$label" "$hint" >/dev/tty
+    if ! IFS= read -r reply </dev/tty; then
+      echo "Cannot read installation choice; set NETRISER_AUTO_UPDATE and NETRISER_ENABLE_REBOOT for unattended installation." >&2
+      return 1
+    fi
+    case "$reply" in
+      [Yy]|[Yy][Ee][Ss]) printf 'true\n'; return ;;
+      [Nn]|[Nn][Oo]) printf 'false\n'; return ;;
+      '') printf '%s\n' "$fallback"; return ;;
+      *) printf 'Please answer y or n (or Enter for the default).\n' >/dev/tty ;;
+    esac
+  done
 }
 
 discover_config() {
@@ -93,7 +129,7 @@ rollback() {
   else
     run_root launchctl unload -w /Library/LaunchDaemons/com.netriser.daemon.plist >/dev/null 2>&1 || true
   fi
-  for p in "$BIN" /usr/local/bin/netriser /usr/local/bin/nr "$LEGACY_BIN" "$NEW_CONFIG" "$LEGACY_CONFIG" "$LEGACY_CONFIG_ARG" "$LEGACY_STATE" /var/lib/netriser /Library/Application\ Support/mesh-watchdog /Library/Application\ Support/netriser /var/log/mesh-watchdog.log /var/log/mesh-watchdog /var/log/netriser.log /var/log/netriser /run/mesh-watchdog/mesh-watchdog.lock /run/netriser/netriser.lock /var/run/mesh-watchdog.lock /var/run/netriser.lock; do restore_path "$p"; done
+  for p in "$DOC_DIR" "$BIN" /usr/local/bin/netriser /usr/local/bin/nr "$LEGACY_BIN" "$NEW_CONFIG" "$LEGACY_CONFIG" "$LEGACY_CONFIG_ARG" "$LEGACY_STATE" /var/lib/netriser /Library/Application\ Support/mesh-watchdog /Library/Application\ Support/netriser /var/log/mesh-watchdog.log /var/log/mesh-watchdog /var/log/netriser.log /var/log/netriser /run/mesh-watchdog/mesh-watchdog.lock /run/netriser/netriser.lock /var/run/mesh-watchdog.lock /var/run/netriser.lock; do restore_path "$p"; done
   [ -z "$LEGACY_POLICY_OVERRIDE" ] || restore_path "$LEGACY_POLICY_OVERRIDE"
   if [ "$OS" = linux ]; then
     for p in /etc/systemd/system/netriser.service /etc/systemd/system/netriser-policy.service /etc/systemd/system/mesh-watchdog.service /etc/systemd/system/mesh-watchdog-policy.service; do restore_path "$p"; done
@@ -120,14 +156,22 @@ trap on_exit EXIT
 trap 'exit 1' HUP INT TERM
 
 URL="${DIST_URL%/}/bin/${ASSET}"
-echo "Downloading NetRiser for ${OS}/${ARCH} from ${URL}"
+echo "[1/8] NetRiser installation for ${OS}/${ARCH}; checking administrator access"
+run_root true
+echo "[2/8] Downloading binary: ${URL}"
 fetch "$URL" "$STAGED"
+echo '[2/8] Downloading MIT license and third-party notices'
+fetch "${DIST_URL%/}/LICENSE" "$WORK/LICENSE"
+fetch "${DIST_URL%/}/THIRD_PARTY_NOTICES" "$WORK/THIRD_PARTY_NOTICES"
+echo '[3/8] Downloading checksums and verifying SHA-256'
 fetch "${DIST_URL%/}/sha256sums.txt" "$SUMS"
 EXPECTED_HASH="$(awk -v name="$ASSET" '$2 == name {print $1; exit}' "$SUMS")"
 case "$EXPECTED_HASH" in *[!0123456789abcdefABCDEF]*|'') echo "Missing or invalid SHA-256 entry for ${ASSET}" >&2; exit 1 ;; esac
 if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$EXPECTED_HASH" "$STAGED" | sha256sum -c - >/dev/null
 else printf '%s  %s\n' "$EXPECTED_HASH" "$STAGED" | shasum -a 256 -c - >/dev/null; fi
 chmod 755 "$STAGED"
+"$STAGED" version
+echo '[4/8] Detecting existing services and configuration'
 
 if [ "$OS" = linux ]; then
   OLD_MAIN_ACTIVE=0; OLD_POLICY_ACTIVE=0; OLD_MAIN_ENABLED=0; OLD_POLICY_ENABLED=0
@@ -165,13 +209,25 @@ else
   run_root launchctl list com.netriser.daemon >/dev/null 2>&1 && NEW_WAS_ACTIVE=1 || true
 fi
 
+AUTO_DEFAULT=true
+REBOOT_DEFAULT=false
+EFFECTIVE_CONFIG="${LEGACY_CONFIG_ARG:-$NEW_CONFIG}"
+if run_root test -f "$EFFECTIVE_CONFIG" || run_root test -f "$LEGACY_CONFIG" || run_root test -d "$LEGACY_STATE"; then
+  AUTO_DEFAULT=keep
+  REBOOT_DEFAULT=keep
+fi
+AUTO_CHOICE="$(choose_setting 'Enable automatic updates' "${NETRISER_AUTO_UPDATE:-}" "$AUTO_DEFAULT")"
+REBOOT_CHOICE="$(choose_setting 'Allow emergency host reboot (off by default; fresh installs wait at least 5 minutes)' "${NETRISER_ENABLE_REBOOT:-}" "$REBOOT_DEFAULT")"
+echo "Installation choices: automatic updates=$AUTO_CHOICE; emergency reboot=$REBOOT_CHOICE"
+
 # Create a durable backup before stopping services or changing any installed file.
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 if [ "$OS" = linux ]; then BACKUP_ROOT=/var/backups; else BACKUP_ROOT="/Library/Application Support/NetRiser-Backups"; fi
 BACKUP="$BACKUP_ROOT/netriser-migration-$STAMP-$$"
+echo "[5/8] Saving rollback backup: $BACKUP"
 run_root mkdir -p "$BACKUP"
 run_root chmod 700 "$BACKUP"
-for p in "$BIN" /usr/local/bin/netriser /usr/local/bin/nr "$LEGACY_BIN" "$NEW_CONFIG" "$LEGACY_CONFIG" "$LEGACY_CONFIG_ARG" "$LEGACY_STATE" /var/lib/netriser /Library/Application\ Support/mesh-watchdog /Library/Application\ Support/netriser /var/log/mesh-watchdog.log /var/log/mesh-watchdog /var/log/netriser.log /var/log/netriser /run/mesh-watchdog/mesh-watchdog.lock /run/netriser/netriser.lock /var/run/mesh-watchdog.lock /var/run/netriser.lock; do backup_path "$p"; done
+for p in "$DOC_DIR" "$BIN" /usr/local/bin/netriser /usr/local/bin/nr "$LEGACY_BIN" "$NEW_CONFIG" "$LEGACY_CONFIG" "$LEGACY_CONFIG_ARG" "$LEGACY_STATE" /var/lib/netriser /Library/Application\ Support/mesh-watchdog /Library/Application\ Support/netriser /var/log/mesh-watchdog.log /var/log/mesh-watchdog /var/log/netriser.log /var/log/netriser /run/mesh-watchdog/mesh-watchdog.lock /run/netriser/netriser.lock /var/run/mesh-watchdog.lock /var/run/netriser.lock; do backup_path "$p"; done
 if [ -n "$LEGACY_POLICY_OVERRIDE" ]; then backup_path "$LEGACY_POLICY_OVERRIDE"; fi
 if [ "$OS" = linux ]; then
   for p in /etc/systemd/system/netriser.service /etc/systemd/system/netriser-policy.service /etc/systemd/system/mesh-watchdog.service /etc/systemd/system/mesh-watchdog-policy.service; do backup_path "$p"; done
@@ -183,6 +239,7 @@ fi
 run_root mkdir -p "$BIN_DIR"
 run_root mkdir -p /usr/local/bin
 MUTATING=1
+echo '[6/8] Stopping existing daemon and installing verified binary'
 if [ "$OS" = linux ]; then
   [ "$NEW_WAS_ACTIVE" -eq 1 ] && run_root systemctl stop netriser.service
   # Stop the legacy policy process without running its route-removal ExecStop.
@@ -199,11 +256,20 @@ fi
 # rerun cannot leave a running service on an older executable.
 run_root install -m 0755 "$STAGED" "$BIN_DIR/.netriser.new"
 run_root mv -f "$BIN_DIR/.netriser.new" "$BIN"
+run_root mkdir -p "$DOC_DIR"
+run_root install -m 0644 "$WORK/LICENSE" "$DOC_DIR/LICENSE"
+run_root install -m 0644 "$WORK/THIRD_PARTY_NOTICES" "$DOC_DIR/THIRD_PARTY_NOTICES"
 if [ -n "$LEGACY_CONFIG_ARG" ]; then
   run_root "$BIN" --config "$LEGACY_CONFIG_ARG" migrate
 else
   run_root "$BIN" migrate
 fi
+echo "[7/8] Creating or preserving configuration: $EFFECTIVE_CONFIG"
+set -- "$BIN" --config "$EFFECTIVE_CONFIG" init-config
+[ "$AUTO_CHOICE" = keep ] || set -- "$@" "--auto-update=$AUTO_CHOICE"
+[ "$REBOOT_CHOICE" = keep ] || set -- "$@" "--enable-reboot=$REBOOT_CHOICE"
+run_root "$@"
+echo '[8/8] Starting NetRiser and verifying service state'
 if [ "$NEW_EXISTS" -eq 1 ]; then
   run_root "$BIN" service restart
 elif [ -n "$LEGACY_CONFIG_ARG" ]; then
@@ -231,4 +297,7 @@ else
 fi
 run_root "$BIN" version
 echo "NetRiser installed. Rollback backup: $BACKUP"
+echo "License: MIT; license texts installed in $DOC_DIR"
+echo "Commands: nr status; nr autoupdate on|off|status; nr reboot on|off|status"
+echo "Logs: $(if [ "$OS" = linux ]; then echo 'journalctl -u netriser -f; /var/log/netriser.log'; else echo '/var/log/netriser.log'; fi)"
 SUCCESS=1

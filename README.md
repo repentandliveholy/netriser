@@ -1,5 +1,10 @@
 # NetRiser
 
+Ever broken a remote computer's network connection and lost the access you
+needed to fix it? NetRiser helps you get back in. It monitors connectivity and
+attempts targeted recovery before you need someone on site to restart the
+machine.
+
 NetRiser is a cross-platform network watchdog for systems that use physical and
 mesh-network interfaces. It checks external and optional mesh connectivity,
 records incidents, and can perform bounded recovery actions when routes or DNS
@@ -60,6 +65,7 @@ Important settings:
 | `canary_targets` | Public network probes, specified as `host:port` values. |
 | `mesh_canaries` | Optional endpoints reachable through the mesh. |
 | `dns_canaries` | Hostnames used to check system DNS resolution. |
+| `allow_dns_recovery` | Permit restoration of a known healthy Linux resolver configuration. |
 | `management_interface`, `management_gateway` | Optional physical uplink overrides. |
 | `observation_mode` | Log incidents without applying recovery actions. |
 | `allow_route_sanitation` | Permit targeted cleanup of suspicious routes. |
@@ -72,10 +78,19 @@ Set only recovery actions appropriate for the host. Emergency reboot is
 disabled by default and should remain disabled unless unattended reboot is an
 explicit operational requirement.
 
+## DNS recovery
+
+DNS failures are detected separately from loss of IP connectivity. On Linux,
+NetRiser can restore a previously confirmed resolver configuration and restart
+its managed DNS service. On Windows and macOS, DNS diagnostics are available;
+this resolver-file recovery mechanism is Linux-specific. DNS-only failures do
+not trigger overlay quarantine, WAN restarts or emergency reboot.
+
 ## Commands
 
 ```sh
 netriser status
+nr status                    # same application, short command
 netriser check-config
 netriser run                 # foreground mode
 netriser service install     # install or update the system service

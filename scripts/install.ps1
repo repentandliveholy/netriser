@@ -90,6 +90,7 @@ function Rollback-Install {
     Write-Warning "Installation failed; restoring previous files and service state from $Backup"
     Stop-Service netriser -Force -ErrorAction SilentlyContinue
     if (-not $NewService) { & sc.exe delete netriser | Out-Null }
+    if ($StagePath) { Remove-Item -LiteralPath $StagePath -Force -ErrorAction SilentlyContinue }
     foreach ($path in @($LicenseDir, $BinPath, (Join-Path $BinDir 'nr.cmd'), (Join-Path $BinDir 'mesh-watchdog.cmd'), $NewData, $LegacyData, $LegacyPath, $LegacyConfig)) {
         Restore-BackupPath $path
     }
@@ -151,9 +152,11 @@ try {
     if ($LegacyWasRunning) { Stop-Service mesh-watchdog -Force }
     if ($LegacyService) { Set-Service mesh-watchdog -StartupType Disabled }
 
-    Copy-Item -LiteralPath $TempPath -Destination $StagePath
+    Copy-Item -LiteralPath $TempPath -Destination $StagePath -Force
     if (Test-Path -LiteralPath $BinPath) {
-        [System.IO.File]::Replace($StagePath, $BinPath, $null, $true)
+        # Windows PowerShell converts $null to "" for .NET string arguments;
+        # File.Replace rejects "" as a backup path. Pass a real null instead.
+        [System.IO.File]::Replace($StagePath, $BinPath, [NullString]::Value, $true)
     } else {
         Move-Item -LiteralPath $StagePath -Destination $BinPath
     }

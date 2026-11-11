@@ -7,6 +7,8 @@
 - Add `netriser observe on|off|status` and `init-config --observation-mode=bool`.
 - Document `allowed_default_interfaces` for hosts that send their own traffic
   through a Tailscale or other overlay exit node.
+- Windows installer: fix upgrading an existing installation under Windows
+  PowerShell 5.1 ("The path is not of a legal form" when replacing the binary).
 
 ## 1.2.1
 

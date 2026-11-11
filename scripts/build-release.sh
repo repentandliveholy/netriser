@@ -88,15 +88,86 @@ cat > "$DIST_DIR/index.html" <<EOF
 :root{color-scheme:dark;--bg:#0b1220;--panel:#111c2e;--line:#26364c;--ink:#e8f0fa;--muted:#9fb0c5;--accent:#62d6b5;--blue:#85b8ff}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% 0,#18334b 0,transparent 42%),var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{width:min(1040px,calc(100% - 36px));margin:auto}.top{padding:22px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.brand{font-weight:800;letter-spacing:.04em}.top a,.links a{color:var(--blue);text-decoration:none}.hero{padding:74px 0 54px;max-width:760px}.eyebrow{color:var(--accent);text-transform:uppercase;letter-spacing:.14em;font-size:.78rem;font-weight:700}.hero h1{font-size:clamp(2.8rem,8vw,5rem);line-height:1.02;margin:14px 0}.hero p{font-size:1.2rem;color:var(--muted);max-width:650px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}.button{display:inline-block;padding:11px 17px;border-radius:9px;background:var(--accent);color:#07131a;font-weight:750;text-decoration:none}.button.secondary{background:transparent;color:var(--ink);border:1px solid var(--line)}section{padding:28px 0 36px;border-top:1px solid var(--line)}h2{font-size:1.55rem;margin:0 0 8px}.muted{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:12px;margin-top:20px}.card{padding:17px;border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 85%,transparent);border-radius:12px}.card h3{margin:0 0 7px;font-size:1rem}.card a{color:var(--blue)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#070d16;border:1px solid var(--line);border-radius:10px;padding:15px;color:#d5e4f5}.links{display:flex;gap:18px;flex-wrap:wrap}.foot{padding:28px 0 50px;color:var(--muted);font-size:.9rem}
+.cmd{position:relative;margin:12px 0;cursor:pointer}
+.cmd pre{margin:0;padding:14px 92px 14px 16px;background:#070d16;border:1px solid var(--line);border-radius:10px;color:#d5e4f5;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.95rem;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;transition:border-color .15s ease}
+.cmd:hover pre{border-color:#384c66}
+.copy-btn{position:absolute;top:9px;right:10px;display:inline-flex;align-items:center;gap:6px;padding:6px 11px;background:#111c2e;color:var(--muted);border:1px solid var(--line);border-radius:7px;font-family:system-ui,-apple-system,sans-serif;font-size:.78rem;font-weight:600;letter-spacing:.02em;cursor:pointer;transition:all .15s ease;user-select:none;line-height:1}
+.copy-btn:hover{background:#18283f;color:var(--ink);border-color:#455e80}
+.copy-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.copy-btn:active{transform:scale(.97)}
+.copy-btn .icon-check{display:none}
+.copy-btn.copied{background:rgba(98,214,181,.14);color:var(--accent);border-color:var(--accent)}
+.copy-btn.copied .icon-copy{display:none}
+.copy-btn.copied .icon-check{display:inline-block;color:var(--accent)}
+@media (max-width:480px){.cmd pre{padding-right:76px;font-size:.88rem}.copy-btn{padding:5px 8px;font-size:.74rem;gap:4px;top:8px;right:8px}}
 </style></head><body><main>
 <header class="top"><div class="brand">NETRISER</div><a href="https://github.com/repentandliveholy/netriser">GitHub ↗</a></header>
 <section class="hero" style="border:0"><div class="eyebrow">Network resilience · v${VERSION}</div><h1>Lost access to a remote computer?</h1><p>A network change can cut off the very connection you need to fix it. NetRiser attempts automatic recovery of interfaces, routes, and DNS, helping you get back in before someone has to visit the machine and restart it.</p><div class="actions"><a class="button" href="bin/netriser-linux-amd64">Download Linux x86_64</a><a class="button secondary" href="https://github.com/repentandliveholy/netriser">Source and releases</a></div></section>
-<section><h2>Install</h2><p class="muted">The installer shows each step, creates configuration, and asks about read-only observation mode, automatic updates and emergency reboot. New installations default to observation off, updates on and reboot off; Enter preserves existing settings on a rerun. Linux and macOS need administrator privileges; Windows requires elevated PowerShell.</p><pre>curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh</pre><pre>irm https://netriser.repentandliveholy.org/install.ps1 | iex</pre></section>
+<section><h2>Install</h2><p class="muted">The installer shows each step, creates configuration, and asks about read-only observation mode, automatic updates and emergency reboot. New installations default to observation off, updates on and reboot off; Enter preserves existing settings on a rerun. Linux and macOS need administrator privileges; Windows requires elevated PowerShell.</p>
+<div class="cmd" title="Click to copy"><pre>curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh</pre><button type="button" class="copy-btn" aria-label="Copy Linux/macOS install command" title="Copy command"><svg class="icon-copy" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><svg class="icon-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span class="btn-text">Copy</span></button></div>
+<div class="cmd" title="Click to copy"><pre>irm https://netriser.repentandliveholy.org/install.ps1 | iex</pre><button type="button" class="copy-btn" aria-label="Copy Windows PowerShell install command" title="Copy command"><svg class="icon-copy" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><svg class="icon-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span class="btn-text">Copy</span></button></div>
+</section>
 <section><h2>Downloads</h2><p class="muted">Release binaries are standalone Go executables. Verify a download against the published SHA-256 file.</p><div class="grid">
 <div class="card"><h3>Linux · x86_64</h3><a href="bin/netriser-linux-amd64">netriser-linux-amd64</a></div><div class="card"><h3>Linux · ARM64</h3><a href="bin/netriser-linux-arm64">netriser-linux-arm64</a></div><div class="card"><h3>Windows · x86_64</h3><a href="bin/netriser-windows-amd64.exe">netriser-windows-amd64.exe</a></div><div class="card"><h3>macOS · Apple Silicon</h3><a href="bin/netriser-darwin-arm64">netriser-darwin-arm64</a></div><div class="card"><h3>macOS · Intel</h3><a href="bin/netriser-darwin-amd64">netriser-darwin-amd64</a></div></div><p class="links"><a href="sha256sums.txt">SHA-256 checksums</a><a href="version.json">Update manifest</a><a href="README.md">Documentation</a><a href="LICENSE">MIT license</a><a href="THIRD_PARTY_NOTICES">Third-party licenses</a></p></section>
 <section><h2>Migration</h2><p class="muted">The installer keeps the existing configuration, state, logs, reboot policy, and update settings. It stops the old service, runs <code>netriser migrate</code>, then installs and starts the new service. The old service is restored if migration or service startup fails.</p><p class="links"><a href="MIGRATION.md">Migration guide</a><a href="config.example.yaml">Example configuration</a><a href="README.md">Full documentation</a></p></section>
 <footer class="foot">NetRiser ${VERSION} · Copyright &copy; 2026 Muslim Bayraktar · <a href="https://github.com/repentandliveholy/netriser">Source on GitHub</a> · <a href="README.md">Configuration and security notes</a> · <a href="LICENSE">MIT License</a></footer>
-</main></body></html>
+</main>
+<script>
+(function(){
+  function copy(btn){
+    var cmd=btn.closest('.cmd');
+    if(!cmd)return;
+    var pre=cmd.querySelector('pre');
+    if(!pre)return;
+    var text=(pre.innerText||pre.textContent||'').trim();
+    if(!text)return;
+    function success(){
+      btn.classList.add('copied');
+      var label=btn.querySelector('.btn-text');
+      if(label)label.textContent='Copied!';
+      setTimeout(function(){
+        btn.classList.remove('copied');
+        if(label)label.textContent='Copy';
+      },2000);
+    }
+    if(navigator.clipboard&&window.isSecureContext){
+      navigator.clipboard.writeText(text).then(success,function(){fallback(text);success();});
+    }else{
+      fallback(text);
+      success();
+    }
+  }
+  function fallback(text){
+    var ta=document.createElement('textarea');
+    ta.value=text;
+    ta.style.position='fixed';
+    ta.style.top='0';
+    ta.style.left='-9999px';
+    ta.style.opacity='0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try{document.execCommand('copy');}catch(e){}
+    document.body.removeChild(ta);
+  }
+  document.querySelectorAll('.copy-btn').forEach(function(btn){
+    btn.addEventListener('click',function(e){
+      e.stopPropagation();
+      copy(btn);
+    });
+  });
+  document.querySelectorAll('.cmd').forEach(function(cmd){
+    cmd.addEventListener('click',function(e){
+      if(e.target.closest('.copy-btn'))return;
+      var sel=window.getSelection();
+      if(sel&&sel.toString().length>0)return;
+      var btn=cmd.querySelector('.copy-btn');
+      if(btn)copy(btn);
+    });
+  });
+})();
+</script>
+</body></html>
 EOF
 
 echo "Release package assembled: $DIST_DIR"

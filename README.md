@@ -1,0 +1,120 @@
+# NetRiser
+
+NetRiser is a cross-platform network watchdog for systems that use physical and
+mesh-network interfaces. It checks external and optional mesh connectivity,
+records incidents, and can perform bounded recovery actions when routes or DNS
+fail. The application is a standalone Go executable for Linux, Windows, and
+macOS.
+
+NetRiser does not guarantee network availability or protect against every
+misconfiguration. Recovery changes system routes and may restart network or
+overlay services. Review the configuration and test it on a system you can
+access locally before enabling remediation on a remote host.
+
+## Install
+
+Linux and macOS require administrator privileges. Windows requires an elevated
+PowerShell session. Installers migrate an existing Mesh Watchdog configuration
+and install the NetRiser service.
+
+```sh
+curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh
+```
+
+```powershell
+irm https://netriser.repentandliveholy.org/install.ps1 | iex
+```
+
+Downloads, checksums, and release metadata are available from the
+[distribution page](https://netriser.repentandliveholy.org). Source and release
+history are published at [GitHub](https://github.com/repentandliveholy/netriser).
+
+## Migration from Mesh Watchdog
+
+The 1.2.0 installers stop and disable the legacy service before migration. They
+run `netriser migrate`, install the NetRiser service, and restore the legacy
+service if migration or service installation fails. Existing configuration is
+retained, including reboot policy and user-selected settings. Historical state,
+log, incident, and lock paths remain in place; migration does not move or erase
+those files. The default update URL changes to the NetRiser distribution host;
+custom update URLs remain unchanged. See [MIGRATION.md](MIGRATION.md) for the
+manual procedure and platform paths.
+
+The installed command is `netriser`. `nr` is a short alias, and
+`mesh-watchdog` remains available as a compatibility alias. Windows adds the
+command directory to the machine `PATH`; its `.cmd` aliases invoke the
+canonical executable so updates affect the service binary. The background
+service is named `netriser`.
+
+## Configure
+
+The default configuration is `/etc/netriser/config.yaml` on Linux and macOS,
+and `%ProgramData%\netriser\config.yaml` on Windows. Copy
+[config.example.yaml](config.example.yaml) as a starting point. Run commands
+with `--config PATH` to use a different file.
+
+Important settings:
+
+| Setting | Purpose |
+| --- | --- |
+| `canary_targets` | Public network probes, specified as `host:port` values. |
+| `mesh_canaries` | Optional endpoints reachable through the mesh. |
+| `dns_canaries` | Hostnames used to check system DNS resolution. |
+| `management_interface`, `management_gateway` | Optional physical uplink overrides. |
+| `observation_mode` | Log incidents without applying recovery actions. |
+| `allow_route_sanitation` | Permit targeted cleanup of suspicious routes. |
+| `allow_service_quarantine` | Permit stopping a mesh service when a matching rogue route is detected. |
+| `allow_network_restart` | Permit supported network-stack recovery. |
+| `enable_reboot` | Permit emergency host reboot. Defaults to `false`. |
+| `auto_update`, `update_url` | Control update checks and the distribution endpoint. |
+
+Set only recovery actions appropriate for the host. Emergency reboot is
+disabled by default and should remain disabled unless unattended reboot is an
+explicit operational requirement.
+
+## Commands
+
+```sh
+netriser status
+netriser check-config
+netriser run                 # foreground mode
+netriser service install     # install or update the system service
+netriser service stop
+netriser update --check
+netriser autoupdate off
+```
+
+The `--config PATH` flag can be used before the command, for example:
+`netriser --config /path/to/config.yaml status`. Use `netriser --help` for the
+complete command list. On Linux, service installation requires systemd.
+
+## Build
+
+Requires a Go toolchain compatible with the version in `go.mod`.
+
+```sh
+./build.sh
+./scripts/build-release.sh
+```
+
+Both scripts build pure-Go binaries (`CGO_ENABLED=0`) for Linux amd64/arm64,
+Windows amd64, and macOS amd64/arm64. The release script creates canonical
+NetRiser asset names, SHA-256 checksums, an update manifest, installer scripts,
+public docs, and a static distribution page in `dist/`. The historical
+Mesh Watchdog download host remains separate during the migration so older
+clients continue receiving matching legacy binaries and checksums.
+
+## Security and limitations
+
+- The service needs administrator/root privileges to inspect and repair routes,
+  manage services, and apply network changes.
+- Recovery can temporarily affect connectivity. Use observation mode and
+  validate behavior before enabling actions on production or remote systems.
+- IPv4 route recovery is the primary remediation scope. IPv6 information may
+  appear in diagnostics, but IPv6 routes are not actively repaired.
+- Automatic updates download release metadata and binaries from the configured
+  update host and verify binary SHA-256 against the manifest. Keep the URL
+  pointed at a trusted HTTPS endpoint.
+- NetRiser relies on operating-system tools such as `ip` and `systemctl` on
+  Linux, PowerShell networking cmdlets on Windows, and `route`/`launchctl` on
+  macOS. Linux service management requires systemd.

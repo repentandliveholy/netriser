@@ -1,0 +1,8 @@
+bin/
+dist/
+.DS_Store
+*.log
+.env
+ops/
+test-results/
+FLEET_STATUS.json

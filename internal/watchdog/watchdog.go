@@ -1,0 +1,1099 @@
+package watchdog
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/repentandliveholy/netriser/internal/canary"
+	"github.com/repentandliveholy/netriser/internal/config"
+	"github.com/repentandliveholy/netriser/internal/netengine"
+)
+
+type Watchdog struct {
+	cfg           *config.Config
+	configPath    string
+	engine        netengine.NetworkEngine
+	checker       ConnectivityChecker
+	clock         Clock
+	logger        *Logger
+	startedAt     time.Time
+	rebootTracker *RebootTracker
+	stateMgr      *StateManager
+}
+
+type CheckReport struct {
+	IncidentID       string                   `json:"incident_id,omitempty"`
+	InitialHealthy   bool                     `json:"initial_healthy"`
+	InitialFailCount int                      `json:"initial_fail_count"`
+	Healthy          bool                     `json:"healthy"`
+	FailCount        int                      `json:"fail_count"`
+	Baseline         netengine.Baseline       `json:"baseline"`
+	CanaryResult     canary.HealthResult      `json:"canary_result"`
+	PostCanaryResult *canary.HealthResult     `json:"post_canary_result,omitempty"`
+	Remediated       bool                     `json:"remediated"`
+	RemediationStage int                      `json:"remediation_stage"`
+	StageReason      string                   `json:"stage_reason,omitempty"`
+	ActionsTaken     []netengine.ActionResult `json:"actions_taken,omitempty"`
+	Timestamp        time.Time                `json:"timestamp"`
+}
+
+// ActionStrings returns human-readable action summaries.
+func (r *CheckReport) ActionStrings() []string {
+	res := make([]string, len(r.ActionsTaken))
+	for i, a := range r.ActionsTaken {
+		res[i] = a.String()
+	}
+	return res
+}
+
+func NewWatchdog(cfg *config.Config, verbose bool) *Watchdog {
+	logger := NewLogger(cfg.LogFile, verbose)
+	engine := netengine.NewEngine(cfg)
+	checker := canary.NewChecker(cfg)
+	clock := RealClock{}
+	tracker := NewRebootTracker(cfg.StateDir, clock)
+	stateMgr := NewStateManager(cfg.StateDir)
+
+	return &Watchdog{
+		cfg:           cfg,
+		configPath:    config.DefaultConfigPath(),
+		engine:        engine,
+		checker:       checker,
+		clock:         clock,
+		logger:        logger,
+		startedAt:     clock.Now(),
+		rebootTracker: tracker,
+		stateMgr:      stateMgr,
+	}
+}
+
+// NewWatchdogWithDeps allows full dependency injection for deterministic testing and isolation.
+func NewWatchdogWithDeps(cfg *config.Config, engine netengine.NetworkEngine, checker ConnectivityChecker, clock Clock, logger *Logger) *Watchdog {
+	if clock == nil {
+		clock = RealClock{}
+	}
+	if logger == nil {
+		logger = NewLogger("", false)
+	}
+	tracker := NewRebootTracker(cfg.StateDir, clock)
+	stateMgr := NewStateManager(cfg.StateDir)
+
+	return &Watchdog{
+		cfg:           cfg,
+		configPath:    config.DefaultConfigPath(),
+		engine:        engine,
+		checker:       checker,
+		clock:         clock,
+		logger:        logger,
+		startedAt:     clock.Now(),
+		rebootTracker: tracker,
+		stateMgr:      stateMgr,
+	}
+}
+
+// SetJSONMode directs console log output to Stderr so Stdout contains clean JSON.
+func (w *Watchdog) SetJSONMode(jsonMode bool) {
+	if w.logger != nil {
+		w.logger.SetJSONMode(jsonMode)
+	}
+}
+
+// SetConfigPath records the explicit configuration file path used.
+func (w *Watchdog) SetConfigPath(p string) {
+	w.configPath = p
+}
+
+// SetEngine overrides network engine.
+func (w *Watchdog) SetEngine(e netengine.NetworkEngine) {
+	w.engine = e
+}
+
+// SetChecker overrides connectivity checker.
+func (w *Watchdog) SetChecker(c ConnectivityChecker) {
+	w.checker = c
+}
+
+// SetClock overrides clock.
+func (w *Watchdog) SetClock(c Clock) {
+	w.clock = c
+	w.rebootTracker.clock = c
+}
+
+// SetStartedAt overrides startup timestamp (useful for testing startup grace).
+func (w *Watchdog) SetStartedAt(t time.Time) {
+	w.startedAt = t
+}
+
+// SetRebootTracker overrides reboot tracker.
+func (w *Watchdog) SetRebootTracker(t *RebootTracker) {
+	w.rebootTracker = t
+}
+
+// SetStateManager overrides state manager.
+func (w *Watchdog) SetStateManager(sm *StateManager) {
+	w.stateMgr = sm
+}
+
+func (w *Watchdog) readFailCount() int {
+	state, err := w.stateMgr.LoadStateReadOnly()
+	if err != nil || state == nil {
+		return 0
+	}
+	return state.FailCount
+}
+
+func (w *Watchdog) writeFailCount(count int) error {
+	state, err := w.stateMgr.LoadState()
+	if err != nil || state == nil {
+		state = &WatchdogState{Version: CurrentStateVersion}
+	}
+	state.FailCount = count
+	if count > 0 {
+		state.LastFailedAt = w.clock.Now()
+	}
+	return w.stateMgr.SaveState(state)
+}
+
+func (w *Watchdog) readQuarantinedServiceNames() []string {
+	state, err := w.stateMgr.LoadStateReadOnly()
+	if err != nil || state == nil {
+		return nil
+	}
+	var names []string
+	for _, q := range state.QuarantinedServices {
+		names = append(names, q.Name)
+	}
+	return names
+}
+
+const MaxIncidentTotalBytes = 10 * 1024 * 1024 // 10 MB
+
+func (w *Watchdog) pruneIncidents(maxKeep int) {
+	if maxKeep <= 0 {
+		maxKeep = 10
+	}
+	entries, err := os.ReadDir(w.cfg.IncidentDir)
+	if err != nil {
+		return
+	}
+	type incidentFile struct {
+		path string
+		size int64
+	}
+	var logs []incidentFile
+	var totalSize int64
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "incident-") && strings.HasSuffix(entry.Name(), ".log") {
+			fullPath := filepath.Join(w.cfg.IncidentDir, entry.Name())
+			fi, fErr := entry.Info()
+			sz := int64(0)
+			if fErr == nil {
+				sz = fi.Size()
+			}
+			logs = append(logs, incidentFile{path: fullPath, size: sz})
+			totalSize += sz
+		}
+	}
+
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].path < logs[j].path
+	})
+
+	for len(logs) > maxKeep || (totalSize > MaxIncidentTotalBytes && len(logs) > 1) {
+		removed := logs[0]
+		_ = os.Remove(removed.path)
+		totalSize -= removed.size
+		logs = logs[1:]
+	}
+}
+
+func (w *Watchdog) dumpIncident(ctx context.Context, failCount int, res canary.HealthResult, b netengine.Baseline) string {
+	_ = os.MkdirAll(w.cfg.IncidentDir, 0750)
+	ts := w.clock.Now().Format("20060102-150405")
+	filename := filepath.Join(w.cfg.IncidentDir, fmt.Sprintf("incident-%s.log", ts))
+
+	diag, _ := w.engine.DumpDiagnostics(ctx, b)
+
+	var buf bytes.Buffer
+	buf.WriteString("======================================================================\n")
+	buf.WriteString("                   NETRISER INCIDENT REPORT                      \n")
+	buf.WriteString("======================================================================\n")
+	buf.WriteString(fmt.Sprintf("Timestamp:           %s\n", w.clock.Now().Format("2006-01-02 15:04:05")))
+	buf.WriteString(fmt.Sprintf("Consecutive Failure: #%d\n", failCount))
+	buf.WriteString(fmt.Sprintf("Physical Baseline:   %s\n", b.String()))
+	buf.WriteString("\n--- Canary Probe Results ---\n")
+	for _, det := range res.Details {
+		status := "FAIL"
+		if det.Success {
+			status = "OK"
+		}
+		errMsg := ""
+		if det.Error != nil {
+			errMsg = fmt.Sprintf(" (error: %v)", det.Error)
+		}
+		buf.WriteString(fmt.Sprintf("  [%s] %-20s latency=%-8v%s\n", status, det.Target, det.Latency.Round(time.Millisecond), errMsg))
+	}
+	buf.WriteString("\n")
+	buf.WriteString(diag)
+
+	if err := os.WriteFile(filename, buf.Bytes(), 0640); err != nil {
+		w.logger.Error("Failed to write diagnostic incident snapshot to %s: %v", filename, err)
+	} else {
+		w.logger.Warn("Diagnostic incident snapshot saved to %s", filename)
+	}
+	w.pruneIncidents(10)
+
+	return filename
+}
+
+func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	_ = w.cfg.EnsureDirectories()
+
+	lock, err := AcquireLock(w.cfg.LockFile)
+	if err != nil {
+		if err == ErrAlreadyRunning {
+			w.logger.Warn("Another NetRiser instance is currently running. Skipping cycle.")
+			return nil, ErrAlreadyRunning
+		}
+		return nil, err
+	}
+	defer lock.Unlock()
+
+	// 1. Detect baseline and ensure Level 1 Policy Routing
+	state, _ := w.stateMgr.LoadState()
+	if state == nil {
+		state = &WatchdogState{Version: CurrentStateVersion}
+	}
+
+	baseline, bErr := w.engine.DetectBaseline(ctx)
+	if bErr != nil {
+		w.logger.Warn("Baseline detection warning: %v", bErr)
+	}
+
+	currentFails := state.FailCount
+
+	// 2. Perform fast parallel connectivity test
+	canaryResult := w.checker.CheckFast(ctx)
+
+	report := &CheckReport{
+		Timestamp:        w.clock.Now(),
+		InitialHealthy:   canaryResult.Healthy,
+		InitialFailCount: currentFails,
+		Healthy:          canaryResult.Healthy,
+		FailCount:        currentFails,
+		Baseline:         baseline,
+		CanaryResult:     canaryResult,
+		Remediated:       false,
+		ActionsTaken:     make([]netengine.ActionResult, 0),
+	}
+
+	if canaryResult.DNSOnlyFailure() {
+		return w.recoverDNS(ctx, report)
+	}
+
+	// 3. Status Healthy -> Auto-recovery of quarantined services if needed
+	if canaryResult.Healthy {
+		if !w.cfg.ObservationMode && canaryResult.DNS != nil && canaryResult.DNS.Healthy {
+			if dns, ok := w.engine.(netengine.DNSRecoveryEngine); ok {
+				if err := dns.CaptureDNSBaseline(ctx); err != nil {
+					w.logger.Warn("DNS baseline not saved: %v", err)
+				}
+			}
+		}
+		if bErr == nil && baseline.IsValid() && !w.cfg.ObservationMode {
+			baseline.LastConfirmed = w.clock.Now()
+			if err := netengine.SaveBaseline(w.cfg.StateDir, baseline); err != nil {
+				return report, fmt.Errorf("confirm baseline: %w", err)
+			}
+			state.Baseline = baseline
+			if err := w.stateMgr.SaveState(state); err != nil {
+				return report, err
+			}
+			if err := w.engine.ApplyPolicyRouting(ctx, baseline); err != nil {
+				w.logger.Warn("Policy routing failed: %v", err)
+			}
+		}
+		if len(state.QuarantinedServices) > 0 && !w.cfg.ObservationMode {
+			var remaining []ServiceQuarantineRecord
+			broken := false
+			recoveredCount := 0
+
+			for idx, rec := range state.QuarantinedServices {
+				if broken || recoveredCount >= 1 || w.clock.Now().Before(rec.NextRetryAfter) {
+					remaining = append(remaining, rec)
+					continue
+				}
+
+				w.logger.Info("Attempting sequential recovery of quarantined service: %s (attempt #%d)", rec.Name, rec.Attempts+1)
+				rec.Attempts++
+				recoveredCount++
+
+				_, rErr := w.engine.RestoreMeshServices(ctx, []string{rec.Name})
+				if rErr != nil {
+					w.logger.Warn("Service %s failed to restart cleanly: %v", rec.Name, rErr)
+					rec.NextRetryAfter = w.clock.Now().Add(5 * time.Minute)
+					remaining = append(remaining, rec)
+					continue
+				}
+
+				if sErr := w.clock.Sleep(ctx, 3*time.Second); sErr != nil {
+					remaining = append(remaining, rec)
+					state.QuarantinedServices = append(remaining, state.QuarantinedServices[idx+1:]...)
+					_ = w.stateMgr.SaveState(state)
+					return report, sErr
+				}
+
+				postRestoreCheck := w.checker.CheckFast(ctx)
+				if postRestoreCheck.DNSOnlyFailure() {
+					state.QuarantinedServices = append(remaining, state.QuarantinedServices[idx+1:]...)
+					if err := w.stateMgr.SaveState(state); err != nil {
+						return report, err
+					}
+					report.CanaryResult, report.Healthy = postRestoreCheck, false
+					return w.recoverDNS(ctx, report)
+				}
+				if postRestoreCheck.Healthy {
+					w.logger.Info("Service %s successfully restored and network remains healthy!", rec.Name)
+				} else {
+					w.logger.Warn("Restoring %s triggered network disruption! Re-quarantining with exponential backoff.", rec.Name)
+					if w.cfg.AllowServiceQuarantine {
+						_, _ = w.engine.QuarantineMeshServices(ctx)
+					}
+					if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
+						_, _ = w.engine.SurgicalCleanRoutes(ctx, baseline)
+					}
+					backoffMins := 5 * (1 << (rec.Attempts - 1))
+					if backoffMins > 120 {
+						backoffMins = 120
+					}
+					rec.NextRetryAfter = w.clock.Now().Add(time.Duration(backoffMins) * time.Minute)
+					remaining = append(remaining, rec)
+					broken = true
+				}
+			}
+
+			state.QuarantinedServices = remaining
+			if err := w.stateMgr.SaveState(state); err != nil {
+				w.logger.Error("Failed to update quarantine state: %v", err)
+			}
+
+			if broken {
+				report.Healthy = false
+				return report, nil
+			}
+		}
+
+		if currentFails > 0 {
+			w.logger.Info("Network connectivity RESTORED after %d failed check(s). Resetting counter.", currentFails)
+			if err := w.writeFailCount(0); err != nil {
+				w.logger.Error("Failed to reset fail count state: %v", err)
+			}
+			report.FailCount = 0
+		}
+		return report, nil
+	}
+
+	if !w.cfg.ObservationMode {
+		for i, rec := range state.QuarantinedServices {
+			if !rec.QuarantinedAt.IsZero() && w.clock.Now().Sub(rec.QuarantinedAt) < 10*time.Minute {
+				continue
+			}
+			if w.clock.Now().Before(rec.ReleaseRetryAfter) {
+				continue
+			}
+			actions, restoreErr := w.engine.RestoreMeshServices(ctx, []string{rec.Name})
+			report.ActionsTaken = append(report.ActionsTaken, actions...)
+			if restoreErr == nil {
+				state.QuarantinedServices = append(state.QuarantinedServices[:i], state.QuarantinedServices[i+1:]...)
+			} else {
+				rec.ReleaseRetryAfter = w.clock.Now().Add(time.Minute)
+				// Put failed services last so one broken unit cannot starve other overlays.
+				state.QuarantinedServices = append(append(state.QuarantinedServices[:i], state.QuarantinedServices[i+1:]...), rec)
+				w.logger.Warn("Expired quarantine restore failed for %s: %v", rec.Name, restoreErr)
+			}
+			if err := w.stateMgr.SaveState(state); err != nil {
+				return report, err
+			}
+			break // Restore one overlay per cycle, even when public canaries are down.
+		}
+	}
+	// 4. Status Unhealthy -> Register failure
+	currentFails++
+	if err := w.writeFailCount(currentFails); err != nil {
+		w.logger.Error("CRITICAL: Failed to write fail count state (%v). Aborting destructive escalation.", err)
+		return report, fmt.Errorf("state persistence failure: %w", err)
+	}
+	report.IncidentID = fmt.Sprintf("inc-%d-%d", w.clock.Now().Unix(), currentFails)
+	report.Healthy = false
+	report.FailCount = currentFails
+	w.logger.Warn("Network connectivity check FAILED (Consecutive failures: %d, Incident ID: %s)", currentFails, report.IncidentID)
+
+	// Dump diagnostics snapshot
+	w.dumpIncident(ctx, currentFails, canaryResult, baseline)
+
+	// 5. Calculate Escalation Decision
+	inStartupGrace := false
+	if w.cfg.StartupGraceSec > 0 {
+		startupGraceDuration := time.Duration(w.cfg.StartupGraceSec) * time.Second
+		if w.clock.Now().Sub(w.startedAt) < startupGraceDuration {
+			inStartupGrace = true
+		}
+	}
+
+	rebootWindow := time.Duration(w.cfg.RebootBudgetWindowSec) * time.Second
+	rebootAllowed, budgetReason := w.rebootTracker.CanReboot(w.cfg.RebootBudgetCount, rebootWindow)
+
+	actionBaseline := baseline
+	if bErr != nil {
+		actionBaseline.IP = ""
+	}
+	decision := DecideEscalation(currentFails, w.cfg, actionBaseline, rebootAllowed, budgetReason, inStartupGrace)
+	report.RemediationStage = decision.Stage
+	report.StageReason = decision.Reason
+	if decision.SkipReason != "" {
+		report.StageReason = decision.SkipReason
+	}
+
+	w.logger.Recovery("[Stage %d] %s", decision.Stage, decision.Reason)
+
+	switch decision.Stage {
+	case 4:
+		if !decision.ActionAllowed {
+			report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
+				Type:        netengine.ActionReboot,
+				Target:      "host",
+				Status:      netengine.ActionSkipped,
+				Description: fmt.Sprintf("Emergency reboot skipped: %s", decision.SkipReason),
+			})
+			if w.cfg.AllowNetworkRestart && ((bErr == nil && baseline.IsValid()) || baseline.HasKnownInterface()) {
+				report.ActionsTaken = append(report.ActionsTaken, w.restartNetwork(ctx, baseline))
+			}
+			if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
+				actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
+				if cleanErr != nil {
+					actions = append(actions, netengine.ActionResult{Type: netengine.ActionCleanRoute, Target: "routes", Status: netengine.ActionFailed, Error: cleanErr.Error()})
+				}
+				report.ActionsTaken = append(report.ActionsTaken, actions...)
+			}
+		} else {
+			// Pre-reboot grace window with context cancellation & final re-check
+			w.logger.Recovery("[Stage 4] Pre-reboot grace window of %ds initiated...", w.cfg.RebootGraceSec)
+			graceDuration := time.Duration(w.cfg.RebootGraceSec) * time.Second
+			if err := w.clock.Sleep(ctx, graceDuration); err != nil {
+				return report, err
+			}
+
+			// Pre-reboot verification check
+			preRebootCheck := w.checker.CheckFast(ctx)
+			if preRebootCheck.DNSOnlyFailure() {
+				report.CanaryResult = preRebootCheck
+				return w.recoverDNS(ctx, report)
+			}
+			if preRebootCheck.Healthy {
+				w.logger.Info("Connectivity RESTORED during pre-reboot grace window! Aborting emergency host reboot.")
+				_ = w.writeFailCount(0)
+				report.Healthy = true
+				report.Remediated = true
+				report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
+					Type:        netengine.ActionReboot,
+					Target:      "host",
+					Status:      netengine.ActionSkipped,
+					Description: "Reboot aborted: connectivity recovered during grace window",
+				})
+				return report, nil
+			}
+
+			// Proceed with reboot
+			w.logger.Recovery("[Stage 4] Pre-reboot verification failed. Executing emergency host reboot...")
+			_ = w.rebootTracker.RecordReboot()
+			report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
+				Type:        netengine.ActionReboot,
+				Target:      "host",
+				Status:      netengine.ActionExecuted,
+				Description: "Executed emergency host reboot",
+			})
+			_ = w.engine.EmergencyReboot(ctx, fmt.Sprintf("unrecoverable network isolation after %d checks", currentFails))
+		}
+
+	case 3:
+		if !decision.ActionAllowed {
+			report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
+				Type:        netengine.ActionRestartStack,
+				Target:      baseline.Interface,
+				Status:      netengine.ActionSkipped,
+				Description: fmt.Sprintf("Network restart skipped: %s", decision.SkipReason),
+			})
+		} else {
+			report.ActionsTaken = append(report.ActionsTaken, w.restartNetwork(ctx, baseline))
+		}
+		if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
+			actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
+			if cleanErr != nil {
+				actions = append(actions, netengine.ActionResult{Type: netengine.ActionCleanRoute, Target: "routes", Status: netengine.ActionFailed, Error: cleanErr.Error()})
+			}
+			report.ActionsTaken = append(report.ActionsTaken, actions...)
+		}
+
+	case 2:
+		if !decision.ActionAllowed {
+			report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
+				Type:        netengine.ActionQuarantineService,
+				Target:      "all",
+				Status:      netengine.ActionSkipped,
+				Description: fmt.Sprintf("Service quarantine skipped: %s", decision.SkipReason),
+			})
+		} else {
+			quarantinedActions, quarantineErr := w.engine.QuarantineMeshServices(ctx)
+			if quarantineErr != nil {
+				quarantinedActions = append(quarantinedActions, netengine.ActionResult{Type: netengine.ActionQuarantineService, Target: "all", Status: netengine.ActionSkipped, Error: quarantineErr.Error(), Description: "Preserved overlays: quarantine preconditions not met"})
+			}
+			report.ActionsTaken = append(report.ActionsTaken, quarantinedActions...)
+
+			// Record exact quarantined services into state
+			curState, _ := w.stateMgr.LoadState()
+			if curState == nil {
+				curState = &WatchdogState{Version: CurrentStateVersion}
+			}
+
+			for _, act := range quarantinedActions {
+				if act.Type == netengine.ActionQuarantineService && (act.Status == netengine.ActionExecuted || act.Status == netengine.ActionPartial) {
+					// Check if already present
+					found := false
+					for _, q := range curState.QuarantinedServices {
+						if q.Name == act.Target {
+							found = true
+							break
+						}
+					}
+					if !found {
+						curState.QuarantinedServices = append(curState.QuarantinedServices, ServiceQuarantineRecord{
+							Name:           act.Target,
+							QuarantinedAt:  w.clock.Now(),
+							InitialState:   "active",
+							Attempts:       0,
+							NextRetryAfter: w.clock.Now().Add(5 * time.Minute),
+						})
+					}
+				}
+			}
+			_ = w.stateMgr.SaveState(curState)
+		}
+		if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
+			actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
+			if cleanErr != nil {
+				actions = append(actions, netengine.ActionResult{Type: netengine.ActionCleanRoute, Target: "routes", Status: netengine.ActionFailed, Error: cleanErr.Error()})
+			}
+			report.ActionsTaken = append(report.ActionsTaken, actions...)
+		}
+
+	case 1:
+		if !decision.ActionAllowed {
+			report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
+				Type:        netengine.ActionCleanRoute,
+				Target:      "routes",
+				Status:      netengine.ActionSkipped,
+				Description: fmt.Sprintf("Route sanitation skipped: %s", decision.SkipReason),
+			})
+		} else {
+			actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
+			if cleanErr != nil {
+				actions = append(actions, netengine.ActionResult{Type: netengine.ActionCleanRoute, Target: "routes", Status: netengine.ActionFailed, Error: cleanErr.Error()})
+			}
+			report.ActionsTaken = append(report.ActionsTaken, actions...)
+		}
+
+	default: // Stage 0
+		w.logger.Info("[Stage 0] Failure count %d below threshold or observation mode active. No remediation attempted.", currentFails)
+	}
+
+	for _, act := range report.ActionsTaken {
+		w.logger.Recovery("  - %s", act.String())
+	}
+
+	// 6. Post-remediation verification
+	if decision.Stage > 0 && (decision.ActionAllowed || len(report.ActionsTaken) > 1) {
+		if err := w.clock.Sleep(ctx, 2*time.Second); err != nil {
+			return report, err
+		}
+		postCheck := w.checker.CheckFast(ctx)
+		if postCheck.DNSOnlyFailure() {
+			report.CanaryResult = postCheck
+			return w.recoverDNS(ctx, report)
+		}
+		if postCheck.Healthy {
+			w.logger.Info("Connectivity RESTORED by Stage %d remediation at failure count %d!", report.RemediationStage, currentFails)
+			_ = w.writeFailCount(0)
+			report.Healthy = true
+			report.Remediated = true
+			report.FailCount = 0
+		} else {
+			w.logger.Warn("Connectivity remains down after Stage %d remediation. Next cycle will escalate.", report.RemediationStage)
+		}
+	}
+
+	return report, nil
+}
+
+func (w *Watchdog) restartNetwork(ctx context.Context, b netengine.Baseline) netengine.ActionResult {
+	act := netengine.ActionResult{Type: netengine.ActionRestartStack, Target: b.Interface, Status: netengine.ActionExecuted, Description: "Reconfigured physical network and restored routes"}
+	if err := w.engine.RestartNetworkStack(ctx, b); err != nil {
+		act.Status = netengine.ActionFailed
+		act.Error = err.Error()
+	}
+	return act
+}
+
+// ConfigPath returns the explicit path for helpers; empty selects OS defaults.
+func (w *Watchdog) ConfigPath() string { return w.configPath }
+
+type StatusReport struct {
+	ConfigFile            string                    `json:"config_file"`
+	Baseline              netengine.Baseline        `json:"baseline"`
+	PolicyRoutingTable    int                       `json:"policy_routing_table"`
+	PolicyRoutingPriority int                       `json:"policy_routing_priority"`
+	AutoUpdate            bool                      `json:"auto_update"`
+	AutoUpdateIntervalSec int                       `json:"auto_update_interval_sec"`
+	EnableReboot          bool                      `json:"enable_reboot"`
+	RebootBudget24h       int                       `json:"reboot_budget_24h"`
+	RecentReboots24h      int                       `json:"recent_reboots_24h"`
+	ObservationMode       bool                      `json:"observation_mode"`
+	ConsecutiveFailures   int                       `json:"consecutive_failures"`
+	QuarantinedServices   []ServiceQuarantineRecord `json:"quarantined_services"`
+	CanaryResults         canary.HealthResult       `json:"canary_results"`
+	Errors                []string                  `json:"errors,omitempty"`
+}
+
+func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var errs []string
+
+	baseline, bErr := w.engine.DetectBaseline(ctx)
+	if bErr != nil {
+		errs = append(errs, fmt.Sprintf("baseline discovery warning: %v", bErr))
+	}
+
+	state, sErr := w.stateMgr.LoadStateReadOnly()
+	if sErr != nil {
+		errs = append(errs, fmt.Sprintf("state loading warning: %v", sErr))
+	}
+
+	fails := 0
+	var quarantined []ServiceQuarantineRecord
+	if state != nil {
+		fails = state.FailCount
+		quarantined = state.QuarantinedServices
+	}
+
+	canaryRes := w.checker.CheckDetailed(ctx)
+
+	cfgPath := w.configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+
+	recentReboots := 0
+	if w.rebootTracker != nil {
+		history, _ := w.rebootTracker.LoadHistory()
+		cutoff := w.clock.Now().Add(-24 * time.Hour)
+		for _, t := range history {
+			if t.After(cutoff) {
+				recentReboots++
+			}
+		}
+	}
+
+	report := &StatusReport{
+		ConfigFile:            cfgPath,
+		Baseline:              baseline,
+		PolicyRoutingTable:    w.cfg.PolicyRoutingTable,
+		PolicyRoutingPriority: w.cfg.PolicyRoutingPriority,
+		EnableReboot:          w.cfg.EnableReboot,
+		AutoUpdate:            w.cfg.AutoUpdate,
+		AutoUpdateIntervalSec: w.cfg.AutoUpdateIntervalSec,
+		RebootBudget24h:       w.cfg.RebootBudgetCount,
+		RecentReboots24h:      recentReboots,
+		ObservationMode:       w.cfg.ObservationMode,
+		ConsecutiveFailures:   fails,
+		QuarantinedServices:   quarantined,
+		CanaryResults:         canaryRes,
+		Errors:                errs,
+	}
+	return report, nil
+}
+
+func (w *Watchdog) StatusJSON(ctx context.Context) (string, error) {
+	rep, err := w.StatusReport(ctx)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (w *Watchdog) Status(ctx context.Context) string {
+	rep, _ := w.StatusReport(ctx)
+	if rep == nil {
+		return "Error generating status report\n"
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("======================================================================\n")
+	buf.WriteString("                NETRISER STATUS REPORT                   \n")
+	buf.WriteString("======================================================================\n")
+	buf.WriteString(fmt.Sprintf("Configuration File:   %s\n", rep.ConfigFile))
+	buf.WriteString(fmt.Sprintf("Observation Mode:     %t\n", rep.ObservationMode))
+	buf.WriteString(fmt.Sprintf("Physical Interface:   %s\n", rep.Baseline.Interface))
+	buf.WriteString(fmt.Sprintf("Physical IP Address:  %s\n", rep.Baseline.IP))
+	buf.WriteString(fmt.Sprintf("Physical Gateway:     %s\n", rep.Baseline.Gateway))
+	buf.WriteString(fmt.Sprintf("Policy Routing Table: %d\n", rep.PolicyRoutingTable))
+	buf.WriteString(fmt.Sprintf("Policy Rule Priority: %d\n", rep.PolicyRoutingPriority))
+	buf.WriteString(fmt.Sprintf("Automatic Updates:    %t (every %ds)\n", rep.AutoUpdate, rep.AutoUpdateIntervalSec))
+	buf.WriteString(fmt.Sprintf("Emergency Reboot:     %t\n", rep.EnableReboot))
+	buf.WriteString(fmt.Sprintf("Reboot Budget (24h):  %d used / %d allowed\n", rep.RecentReboots24h, rep.RebootBudget24h))
+	buf.WriteString(fmt.Sprintf("Consecutive Failures: %d\n", rep.ConsecutiveFailures))
+
+	if len(rep.QuarantinedServices) > 0 {
+		var list []string
+		for _, q := range rep.QuarantinedServices {
+			list = append(list, fmt.Sprintf("%s (retry in %v)", q.Name, time.Until(q.NextRetryAfter).Round(time.Second)))
+		}
+		buf.WriteString(fmt.Sprintf("Quarantined Services: %s\n", strings.Join(list, ", ")))
+	} else {
+		buf.WriteString("Quarantined Services: [None]\n")
+	}
+
+	if len(rep.Errors) > 0 {
+		buf.WriteString(fmt.Sprintf("Diagnostics Warnings: %s\n", strings.Join(rep.Errors, "; ")))
+	}
+
+	buf.WriteString("\n--- Canary Probes Status ---\n")
+	for _, det := range rep.CanaryResults.Details {
+		status := "FAIL"
+		if det.Success {
+			status = "OK"
+		}
+		errMsg := ""
+		if det.Error != nil {
+			errMsg = fmt.Sprintf(" (%v)", det.Error)
+		}
+		buf.WriteString(fmt.Sprintf("  [%s] %-22s latency=%-8v%s\n", status, det.Target, det.Latency.Round(time.Millisecond), errMsg))
+	}
+	buf.WriteString(fmt.Sprintf("Overall Health:       %s\n", rep.CanaryResults.SummaryString()))
+	buf.WriteString("======================================================================\n")
+
+	return buf.String()
+}
+
+type DiagnosticReport struct {
+	Timestamp time.Time          `json:"timestamp"`
+	Baseline  netengine.Baseline `json:"baseline"`
+	Dump      string             `json:"dump"`
+}
+
+func (w *Watchdog) DiagnoseJSON(ctx context.Context) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseline, _ := w.engine.DetectBaseline(ctx)
+	dump, err := w.engine.DumpDiagnostics(ctx, baseline)
+	if err != nil {
+		return "", err
+	}
+	rep := DiagnosticReport{
+		Timestamp: w.clock.Now(),
+		Baseline:  baseline,
+		Dump:      dump,
+	}
+	data, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+type DryRunReport struct {
+	Timestamp          time.Time          `json:"timestamp"`
+	Healthy            bool               `json:"healthy"`
+	CurrentFailCount   int                `json:"current_fail_count"`
+	ProjectedFailCount int                `json:"projected_fail_count"`
+	Baseline           netengine.Baseline `json:"baseline"`
+	BaselineValid      bool               `json:"baseline_valid"`
+	EscalationStage    int                `json:"escalation_stage"`
+	ActionAllowed      bool               `json:"action_allowed"`
+	Reason             string             `json:"reason"`
+	PlannedActions     []string           `json:"planned_actions"`
+}
+
+func (w *Watchdog) EvaluateDryRun(ctx context.Context) (*DryRunReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseline, baselineErr := w.engine.DetectBaseline(ctx)
+	state, _ := w.stateMgr.LoadStateReadOnly()
+	fails := 0
+	if state != nil {
+		fails = state.FailCount
+	}
+
+	canaryRes := w.checker.CheckFast(ctx)
+	report := &DryRunReport{
+		Timestamp:          w.clock.Now(),
+		Healthy:            canaryRes.Healthy,
+		CurrentFailCount:   fails,
+		ProjectedFailCount: fails,
+		Baseline:           baseline,
+		BaselineValid:      baselineErr == nil && baseline.IsValid(),
+	}
+
+	if canaryRes.Healthy {
+		report.EscalationStage = 0
+		report.ActionAllowed = true
+		report.Reason = "Canary connectivity healthy; no remediation needed"
+		report.PlannedActions = []string{"None (network healthy)"}
+		return report, nil
+	}
+	if canaryRes.DNSOnlyFailure() {
+		_, supported := w.engine.(netengine.DNSRecoveryEngine)
+		report.ActionAllowed = supported && w.cfg.AllowDNSRecovery && !w.cfg.ObservationMode
+		report.Reason = "System DNS failed while IP connectivity is healthy; DNS-only recovery, no reboot escalation"
+		if !w.cfg.ObservationMode {
+			report.ProjectedFailCount = 0
+		}
+		if report.ActionAllowed {
+			report.PlannedActions = []string{"Restore last healthy system DNS configuration and its resolver service; verify name resolution"}
+		} else {
+			report.PlannedActions = []string{"Skip DNS recovery (disabled, observation mode, or unsupported platform)"}
+		}
+		return report, nil
+	}
+
+	projectedFails := fails + 1
+	report.ProjectedFailCount = projectedFails
+
+	inStartupGrace := false
+	if w.cfg.StartupGraceSec > 0 {
+		startupGraceDuration := time.Duration(w.cfg.StartupGraceSec) * time.Second
+		if w.clock.Now().Sub(w.startedAt) < startupGraceDuration {
+			inStartupGrace = true
+		}
+	}
+	rebootWindow := time.Duration(w.cfg.RebootBudgetWindowSec) * time.Second
+	rebootAllowed, budgetReason := w.rebootTracker.CanReboot(w.cfg.RebootBudgetCount, rebootWindow)
+
+	actionBaseline := baseline
+	if baselineErr != nil {
+		actionBaseline.IP = ""
+	}
+	decision := DecideEscalation(projectedFails, w.cfg, actionBaseline, rebootAllowed, budgetReason, inStartupGrace)
+	report.EscalationStage = decision.Stage
+	report.ActionAllowed = decision.ActionAllowed
+	report.Reason = decision.Reason
+	if decision.SkipReason != "" {
+		report.Reason = decision.SkipReason
+	}
+
+	switch decision.Stage {
+	case 4:
+		if decision.ActionAllowed {
+			report.PlannedActions = append(report.PlannedActions, "Execute emergency host reboot")
+		} else {
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Skip reboot (%s); fallback to network restart & route sanitation", decision.SkipReason))
+		}
+	case 3:
+		if decision.ActionAllowed {
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Restart network stack on %s", baseline.Interface))
+		} else {
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Skip network restart (%s)", decision.SkipReason))
+		}
+		if w.cfg.AllowRouteSanitation && baselineErr == nil && baseline.IsValid() {
+			report.PlannedActions = append(report.PlannedActions, "Surgically clean rogue routes")
+		}
+	case 2:
+		if decision.ActionAllowed {
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Quarantine suspect mesh services: %s", strings.Join(w.cfg.MonitoredServices, ", ")))
+		} else {
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Skip quarantine (%s)", decision.SkipReason))
+		}
+		if w.cfg.AllowRouteSanitation && baselineErr == nil && baseline.IsValid() {
+			report.PlannedActions = append(report.PlannedActions, "Surgically clean rogue routes")
+		}
+	case 1:
+		if decision.ActionAllowed {
+			report.PlannedActions = append(report.PlannedActions, "Surgically remove rogue default and /1 routes")
+		} else {
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Skip route sanitation (%s)", decision.SkipReason))
+		}
+	default:
+		report.PlannedActions = append(report.PlannedActions, "Observation mode: log only, no actions taken")
+	}
+
+	return report, nil
+}
+
+type ConfigValidationReport struct {
+	Valid      bool               `json:"valid"`
+	ConfigFile string             `json:"config_file"`
+	Baseline   netengine.Baseline `json:"baseline"`
+	Errors     []string           `json:"errors,omitempty"`
+	Warnings   []string           `json:"warnings,omitempty"`
+}
+
+func (w *Watchdog) ValidateConfiguration(ctx context.Context) *ConfigValidationReport {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfgPath := w.configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+
+	rep := &ConfigValidationReport{
+		Valid:      true,
+		ConfigFile: cfgPath,
+	}
+
+	if err := w.cfg.Validate(); err != nil {
+		rep.Valid = false
+		rep.Errors = append(rep.Errors, err.Error())
+	}
+
+	baseline, err := w.engine.DetectBaseline(ctx)
+	rep.Baseline = baseline
+	if err != nil {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("baseline discovery warning: %v", err))
+	} else if !baseline.IsValid() {
+		rep.Warnings = append(rep.Warnings, "physical interface or default gateway not yet detected")
+	}
+
+	return rep
+}
+
+func (w *Watchdog) Reset() {
+	lock, err := AcquireLock(w.cfg.LockFile)
+	if err == nil {
+		defer lock.Unlock()
+	}
+	_ = w.writeFailCount(0)
+	w.logger.Info("Watchdog failure count reset to 0 (quarantine history preserved).")
+}
+
+func (w *Watchdog) RestoreQuarantined(ctx context.Context) error {
+	lock, err := AcquireLock(w.cfg.LockFile)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
+	state, err := w.stateMgr.LoadState()
+	if err != nil || state == nil || len(state.QuarantinedServices) == 0 {
+		w.logger.Info("No quarantined services to restore.")
+		return nil
+	}
+
+	var names []string
+	for _, q := range state.QuarantinedServices {
+		names = append(names, q.Name)
+	}
+	_, rErr := w.engine.RestoreMeshServices(ctx, names)
+	state.QuarantinedServices = nil
+	_ = w.stateMgr.SaveState(state)
+	return rErr
+}
+
+func (w *Watchdog) ApplyPolicy(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lock, err := AcquireLock(w.cfg.LockFile)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
+	// Boot-time retry loop: wait for physical interface to obtain an IP address if not available yet
+	var baseline netengine.Baseline
+	deadline := w.clock.Now().Add(30 * time.Second)
+	for {
+		baseline, err = w.engine.DetectBaseline(ctx)
+		if err == nil && baseline.IP != "" {
+			break
+		}
+		if !w.clock.Now().Before(deadline) || ctx.Err() != nil {
+			if err != nil {
+				return fmt.Errorf("baseline detection failed: %w", err)
+			}
+			return fmt.Errorf("baseline interface %q has no IP address assigned after timeout", baseline.Interface)
+		}
+		if sleepErr := w.clock.Sleep(ctx, 1*time.Second); sleepErr != nil {
+			return sleepErr
+		}
+	}
+
+	return w.engine.ApplyPolicyRouting(ctx, baseline)
+}
+
+func (w *Watchdog) RemovePolicy(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lock, err := AcquireLock(w.cfg.LockFile)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
+	baseline, _ := w.engine.DetectBaseline(ctx)
+	return w.engine.RemovePolicyRouting(ctx, baseline)
+}
+
+func (w *Watchdog) Diagnose(ctx context.Context) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseline, _ := w.engine.DetectBaseline(ctx)
+	return w.engine.DumpDiagnostics(ctx, baseline)
+}
+
+func (w *Watchdog) SimulateHijack(ctx context.Context, duration time.Duration) (func(), error) {
+	session, err := w.SimulateHijackSession(ctx, duration)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = session.Disarm()
+	}, nil
+}
+
+func (w *Watchdog) SimulateHijackSession(ctx context.Context, duration time.Duration) (netengine.SimulationSession, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseline, err := w.engine.DetectBaseline(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Never allow reboot in simulation
+	w.cfg.EnableReboot = false
+
+	return w.engine.SimulateHijackSession(ctx, baseline, duration)
+}

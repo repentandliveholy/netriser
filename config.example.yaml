@@ -1,0 +1,67 @@
+# ======================================================================
+# NetRiser configuration example
+# ======================================================================
+
+# Public DNS/IP targets polled in parallel for connectivity checks.
+canary_targets:
+  - "1.1.1.1:53"
+  - "8.8.8.8:53"
+  - "9.9.9.9:53"
+
+# HTTP fallback probe for networks that intercept or block raw port 53.
+http_fallback_url: "http://1.1.1.1"
+
+# Optional internal mesh canaries, such as a lighthouse or management endpoint.
+mesh_canaries: []
+
+# Check hostname resolution in addition to IP connectivity. An empty list
+# disables DNS probes; any successful hostname passes this check.
+dns_canaries:
+  - "example.com"
+  - "iana.org"
+allow_dns_recovery: true  # Linux: restore the last healthy resolver; DNS recovery never reboots.
+
+# Polling and probe timeouts, in seconds.
+check_interval_sec: 60
+probe_timeout_sec: 3
+
+# Optional physical interface and gateway overrides (empty means auto-detect).
+management_interface: ""
+management_gateway: ""
+
+# Linux source-based policy routing.
+policy_routing_table: 200
+policy_routing_priority: 100
+
+# Overlay services monitored and eligible for quarantine at escalation stage 2.
+monitored_services:
+  - "netbird"
+  - "netbird-client"
+  - "zerotier-one"
+  - "nebula"
+  - "tailscaled"
+
+# Escalation thresholds are consecutive failed checks.
+fail_threshold_stage1: 1         # Targeted route cleanup.
+fail_threshold_stage2: 3         # Quarantine a matching mesh service.
+fail_threshold_stage3: 4         # Restart supported network components.
+fail_threshold_stage4_reboot: 5  # Emergency host reboot, if enabled.
+
+# Observation mode logs failures without applying recovery actions.
+observation_mode: false
+allow_route_sanitation: true
+allow_service_quarantine: true
+allow_network_restart: true
+
+# Emergency reboot is disabled unless explicitly enabled.
+enable_reboot: false
+reboot_grace_sec: 15
+reboot_budget_count: 1
+reboot_budget_window_sec: 3600
+startup_grace_sec: 60
+enable_sysrq_fallback: false     # Linux only: use /proc/sysrq-trigger as a last resort.
+
+# Automatic updates are checked after startup while connectivity is healthy.
+auto_update: true
+auto_update_interval_sec: 21600
+update_url: "https://netriser.repentandliveholy.org"

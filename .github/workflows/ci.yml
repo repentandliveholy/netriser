@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  test:
+    name: Unit & Race Tests
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Run Tests with Race Detector
+        run: go test -v -race ./...
+
+  build:
+    name: Multi-Target Build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Execute Multi-Platform Build Script
+        run: ./build.sh
+
+      - name: Verify All 5 Target Binaries
+        run: |
+          test -s bin/netriser-linux-amd64
+          test -s bin/netriser-linux-arm64
+          test -s bin/netriser-windows-amd64.exe
+          test -s bin/netriser-darwin-arm64
+          test -s bin/netriser-darwin-amd64
+          echo "All 5 cross-platform binaries built successfully."

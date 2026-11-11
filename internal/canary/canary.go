@@ -215,7 +215,7 @@ type targetItem struct {
 }
 
 // CheckFast performs fast parallel checks across internet and mesh groups.
-// It stops probing internet as soon as an internet canary succeeds.
+// It stops probing once the internet quorum (min_healthy_targets) is reached.
 func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -242,8 +242,11 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 	fastCtx, cancel := context.WithTimeout(ctx, c.cfg.ProbeTimeout()+time.Second)
 	defer cancel()
 
+	quorum := c.cfg.InternetQuorum(c.internetProbeCount())
 	resultChan := make(chan TargetResult, len(targets))
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
 
 	for _, item := range targets {
 		wg.Add(1)
@@ -251,9 +254,15 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 			defer wg.Done()
 			res := c.probeSingle(fastCtx, it.target, it.group)
 			resultChan <- res
-			// If an internet target succeeds, we can cancel remaining internet probes
+			// Cancel the remaining probes once enough internet targets answered.
 			if res.Success && it.group == GroupInternet {
-				cancel()
+				mu.Lock()
+				successes++
+				reached := successes >= quorum
+				mu.Unlock()
+				if reached {
+					cancel()
+				}
 			}
 		}(item)
 	}
@@ -264,7 +273,7 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 	}()
 
 	var allDetails []TargetResult
-	internetHealthy := false
+	internetSuccesses := 0
 	meshHealthy := false
 	var winningResult *TargetResult
 
@@ -272,7 +281,7 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 		allDetails = append(allDetails, res)
 		if res.Success {
 			if res.Group == GroupInternet {
-				internetHealthy = true
+				internetSuccesses++
 				if winningResult == nil {
 					winningResult = &res
 				}
@@ -281,6 +290,7 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 			}
 		}
 	}
+	internetHealthy := internetSuccesses >= quorum
 
 	// Filter out "context canceled" errors on probes that were cancelled due to winning probe
 	if winningResult != nil {
@@ -316,6 +326,14 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 	})
 }
 
+func (c *Checker) internetProbeCount() int {
+	n := len(c.cfg.CanaryTargets)
+	if c.cfg.HTTPFallbackURL != "" {
+		n++
+	}
+	return n
+}
+
 // CheckDetailed probes all canaries without early cancellation to gather complete diagnostic latency.
 func (c *Checker) CheckDetailed(ctx context.Context) HealthResult {
 	if ctx == nil {
@@ -349,14 +367,14 @@ func (c *Checker) CheckDetailed(ctx context.Context) HealthResult {
 
 	wg.Wait()
 
-	internetHealthy := false
+	internetSuccesses := 0
 	meshHealthy := false
 	var firstSuccess TargetResult
 
 	for _, r := range results {
 		if r.Success {
 			if r.Group == GroupInternet {
-				internetHealthy = true
+				internetSuccesses++
 				if firstSuccess.Target == "" {
 					firstSuccess = r
 				}
@@ -366,6 +384,7 @@ func (c *Checker) CheckDetailed(ctx context.Context) HealthResult {
 		}
 	}
 
+	internetHealthy := internetSuccesses >= c.cfg.InternetQuorum(c.internetProbeCount())
 	overallHealthy := internetHealthy
 	if len(c.cfg.CanaryTargets) == 0 && c.cfg.HTTPFallbackURL == "" {
 		overallHealthy = meshHealthy

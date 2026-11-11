@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.2.5}"
+VERSION="${VERSION:-1.2.6}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
@@ -60,7 +60,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.2.5: fix Windows default-route listing that always reported failure, which disabled WireGuard and overlay recovery added in 1.2.3. 1.2.4: Windows ignores overlay default routes that carry no traffic (worse effective metric, such as ZeroTier metric 9999). 1.2.3: Windows recovery from WireGuard full tunnels with kill-switch and from a disabled uplink adapter, evidence-based overlay quarantine with correct Windows service names, and allowed_default_interfaces on Windows.",
+  "release_notes": "NetRiser 1.2.6: connectivity requires two answering internet targets (min_healthy_targets), and Windows stops a WireGuard kill-switch tunnel at stage 1. 1.2.5: fix Windows default-route listing that always reported failure, which disabled WireGuard and overlay recovery added in 1.2.3. 1.2.4: Windows ignores overlay default routes that carry no traffic (worse effective metric, such as ZeroTier metric 9999). 1.2.3: Windows recovery from WireGuard full tunnels with kill-switch and from a disabled uplink adapter, evidence-based overlay quarantine with correct Windows service names, and allowed_default_interfaces on Windows.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},

@@ -23,6 +23,11 @@ type Config struct {
 	MeshCanaries     []string `yaml:"mesh_canaries"`
 	DNSCanaries      []string `yaml:"dns_canaries"`
 	AllowDNSRecovery bool     `yaml:"allow_dns_recovery"`
+	// Internet connectivity requires this many distinct successful internet
+	// probes (canary_targets plus http_fallback_url), capped at the number
+	// configured. A single answering resolver can be a false positive: a VPN
+	// kill-switch, for example, still permits DNS to the tunnel's DNS servers.
+	MinHealthyTargets int `yaml:"min_healthy_targets"`
 
 	// Timing
 	CheckIntervalSec    int `yaml:"check_interval_sec"`
@@ -85,6 +90,7 @@ func DefaultConfig() *Config {
 		HTTPFallbackURL:       "http://1.1.1.1",
 		DNSCanaries:           []string{"example.com", "iana.org"},
 		AllowDNSRecovery:      true,
+		MinHealthyTargets:     2,
 		MeshCanaries:          []string{},
 		CheckIntervalSec:      60,
 		RecoveryIntervalSec:   15,
@@ -173,6 +179,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CheckIntervalSec <= 0 {
 		return fmt.Errorf("check_interval_sec must be positive, got %d", c.CheckIntervalSec)
+	}
+	if c.MinHealthyTargets < 1 {
+		return fmt.Errorf("min_healthy_targets must be at least 1, got %d", c.MinHealthyTargets)
 	}
 	if c.ProbeTimeoutSec <= 0 {
 		return fmt.Errorf("probe_timeout_sec must be positive, got %d", c.ProbeTimeoutSec)
@@ -371,6 +380,19 @@ func (c *Config) EnsureDirectories() error {
 }
 
 // ProbeTimeout returns duration for canary probes.
+// InternetQuorum returns how many distinct internet probes must succeed, given
+// the number of internet probes configured.
+func (c *Config) InternetQuorum(probes int) int {
+	q := c.MinHealthyTargets
+	if q < 1 {
+		q = 1
+	}
+	if probes > 0 && q > probes {
+		q = probes
+	}
+	return q
+}
+
 func (c *Config) ProbeTimeout() time.Duration {
 	if c.ProbeTimeoutSec <= 0 {
 		return 3 * time.Second

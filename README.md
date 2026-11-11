@@ -91,6 +91,7 @@ Important settings:
 | Setting | Purpose |
 | --- | --- |
 | `canary_targets` | Public network probes, specified as `host:port` values. |
+| `min_healthy_targets` | Distinct internet probes that must answer (default 2, capped at the number configured). |
 | `mesh_canaries` | Optional endpoints reachable through the mesh. |
 | `dns_canaries` | Hostnames used to check system DNS resolution. |
 | `allow_dns_recovery` | Permit restoration of a known healthy Linux resolver configuration. |

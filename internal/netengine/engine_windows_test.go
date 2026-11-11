@@ -81,7 +81,7 @@ func newFakeWindowsEngine(h *fakeWindowsHost, allowed ...string) *WindowsEngine 
 	return &WindowsEngine{cfg: cfg, runner: h}
 }
 
-func TestWindowsWireGuardKillSwitchTunnelIsStoppedAfterRouteCleanup(t *testing.T) {
+func TestWindowsWireGuardKillSwitchTunnelIsStoppedAtStageOne(t *testing.T) {
 	const wgService = "WireGuardTunnel$wg-hetzner-ovs-server-1"
 	h := &fakeWindowsHost{
 		routes: []string{
@@ -93,25 +93,22 @@ func TestWindowsWireGuardKillSwitchTunnelIsStoppedAfterRouteCleanup(t *testing.T
 	e := newFakeWindowsEngine(h)
 	ctx := context.Background()
 
-	// Stage 1 removes the rogue route; the kill-switch keeps blocking traffic.
+	// Route removal cannot lift the kill-switch: stage 1 stops the tunnel.
 	actions, _ := e.SurgicalCleanRoutes(ctx, Baseline{})
-	if len(h.routes) != 1 || !strings.HasPrefix(h.routes[0], "Ethernet|") {
-		t.Fatalf("rogue route not removed: %v (%+v)", h.routes, actions)
-	}
-
-	// Stage 2 must still identify the tunnel from stage 1 evidence.
-	actions, err := e.QuarantineMeshServices(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if h.services[wgService] {
-		t.Fatalf("WireGuard tunnel service still running: %+v", actions)
+		t.Fatalf("WireGuard tunnel still running after stage 1: %+v", actions)
+	}
+	found := false
+	for _, a := range actions {
+		if a.Type == ActionQuarantineService && a.Target == wgService && a.Status == ActionExecuted {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("stage 1 must report the stopped tunnel for the quarantine record: %+v", actions)
 	}
 	if !h.services["Tailscale"] {
 		t.Fatal("Tailscale was stopped without rogue-route evidence")
-	}
-	if len(actions) != 1 || actions[0].Target != wgService || actions[0].Status != ActionExecuted {
-		t.Fatalf("unexpected quarantine actions: %+v", actions)
 	}
 
 	// Recovery restores exactly the recorded service.
@@ -120,6 +117,20 @@ func TestWindowsWireGuardKillSwitchTunnelIsStoppedAfterRouteCleanup(t *testing.T
 	}
 	if !h.services[wgService] {
 		t.Fatal("WireGuard tunnel service not restarted")
+	}
+}
+
+func TestWindowsWireGuardRouteRemovedWhenQuarantineDisabled(t *testing.T) {
+	const wgService = "WireGuardTunnel$wg-test"
+	h := &fakeWindowsHost{
+		routes:   []string{"Ethernet|0.0.0.0/0|25|Intel(R) Ethernet", "wg-test|0.0.0.0/0|5|WireGuard Tunnel"},
+		services: map[string]bool{wgService: true},
+	}
+	e := newFakeWindowsEngine(h)
+	e.cfg.AllowServiceQuarantine = false
+	_, _ = e.SurgicalCleanRoutes(context.Background(), Baseline{})
+	if !h.services[wgService] || len(h.routes) != 1 {
+		t.Fatalf("with quarantine disabled only the route may be removed: routes=%v services=%v", h.routes, h.services)
 	}
 }
 

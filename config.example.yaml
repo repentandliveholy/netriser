@@ -11,6 +11,12 @@ canary_targets:
 # HTTP fallback probe for networks that intercept or block raw port 53.
 http_fallback_url: "http://1.1.1.1"
 
+# Distinct internet probes (canary_targets plus http_fallback_url) that must
+# answer for connectivity to count as healthy; capped at the number configured.
+# One answer can be misleading: a VPN kill-switch still lets DNS reach the
+# tunnel's resolvers.
+min_healthy_targets: 2
+
 # Optional internal mesh canaries, such as a lighthouse or management endpoint.
 mesh_canaries: []
 

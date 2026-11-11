@@ -891,3 +891,21 @@ func TestExpiredQuarantineIgnoresLongBackoffAndDoesNotStarveOtherServices(t *tes
 		t.Fatalf("other overlay not released: %+v", state)
 	}
 }
+
+// Windows stops a WireGuard kill-switch tunnel during stage 1 route cleanup;
+// the stopped service must be recorded so recovery restarts it later.
+func TestStageOneOverlayStopIsRecordedForRestore(t *testing.T) {
+	w, _, engine, _ := setupTestWatchdog(t)
+	engine.cleanActions = []netengine.ActionResult{
+		{Type: netengine.ActionQuarantineService, Target: "WireGuardTunnel$wg-test", Status: netengine.ActionExecuted},
+		{Type: netengine.ActionQuarantineService, Target: "all", Status: netengine.ActionSkipped},
+	}
+	w.writeFailCount(0)
+	if _, err := w.RunCheckCycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := w.stateMgr.LoadState()
+	if state == nil || len(state.QuarantinedServices) != 1 || state.QuarantinedServices[0].Name != "WireGuardTunnel$wg-test" {
+		t.Fatalf("stage 1 overlay stop not recorded: %+v", state)
+	}
+}

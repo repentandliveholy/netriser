@@ -287,6 +287,15 @@ func (e *WindowsEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]
 	}
 	e.rememberRogue(rogue)
 	for _, r := range rogue {
+		// A WireGuard full tunnel owns the route and, with its kill-switch,
+		// blocks untunneled traffic that route cleanup cannot restore (while
+		// still permitting DNS to the tunnel's resolvers). Stop the tunnel.
+		if r.IsWindowsWireGuard() && e.cfg.AllowServiceQuarantine {
+			if act, ok := e.stopOverlayService(ctx, r); ok {
+				actions = append(actions, act)
+				continue
+			}
+		}
 		script := fmt.Sprintf(`Remove-NetRoute -DestinationPrefix %s -InterfaceAlias %s -Confirm:$false -ErrorAction Stop`, psQuote(r.Prefix), psQuote(r.Alias))
 		act := ActionResult{
 			Type:        ActionCleanRoute,
@@ -296,9 +305,6 @@ func (e *WindowsEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]
 		}
 		if _, err := e.runPowerShell(ctx, 5*time.Second, script); err != nil {
 			act.Status, act.Error = ActionFailed, err.Error()
-		}
-		if r.IsWindowsWireGuard() {
-			act.Description += " (a WireGuard kill-switch may still block traffic; stage 2 stops the tunnel service)"
 		}
 		actions = append(actions, act)
 	}
@@ -359,39 +365,53 @@ func (e *WindowsEngine) QuarantineMeshServices(ctx context.Context) ([]ActionRes
 
 	var actions []ActionResult
 	for _, r := range owners {
-		if svc := WindowsOverlayService(r); svc != "" {
-			script := fmt.Sprintf(`
+		actions = append(actions, e.containOverlay(ctx, r))
+	}
+	return actions, nil
+}
+
+// stopOverlayService stops the service owning an overlay interface. ok is
+// false when the service is unknown, missing or could not be stopped.
+func (e *WindowsEngine) stopOverlayService(ctx context.Context, r WindowsRoute) (ActionResult, bool) {
+	svc := WindowsOverlayService(r)
+	if svc == "" {
+		return ActionResult{}, false
+	}
+	script := fmt.Sprintf(`
 $svc = Get-Service -Name %s -ErrorAction SilentlyContinue
 if (-not $svc) { Write-Output 'MISSING' }
 elseif ($svc.Status -ne 'Running') { Write-Output 'NOT_RUNNING' }
 else { Stop-Service -Name %s -Force -ErrorAction Stop; Write-Output 'STOPPED' }
 `, psQuote(svc), psQuote(svc))
-			out, err := e.runPowerShell(ctx, 15*time.Second, script)
-			switch {
-			case err != nil:
-				actions = append(actions, ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionFailed, Error: err.Error(), Description: "Failed to stop overlay service " + svc})
-			case strings.Contains(out, "STOPPED"):
-				e.forgetRogue(r.Alias)
-				actions = append(actions, ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionExecuted, Description: fmt.Sprintf("Stopped service %s publishing rogue %s on %s", svc, r.Prefix, r.Alias)})
-				continue
-			case strings.Contains(out, "NOT_RUNNING"):
-				e.forgetRogue(r.Alias)
-				actions = append(actions, ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionNotNeeded, Description: "Overlay service already stopped: " + svc})
-				continue
-			}
-			// Missing or failed service: fall back to disabling the adapter.
-		}
-		target := WindowsAdapterTargetPrefix + r.Alias
-		script := fmt.Sprintf(`Disable-NetAdapter -Name %s -Confirm:$false -ErrorAction Stop`, psQuote(r.Alias))
-		act := ActionResult{Type: ActionQuarantineService, Target: target, Status: ActionExecuted, Description: fmt.Sprintf("Disabled overlay adapter %s publishing rogue %s", r.Alias, r.Prefix)}
-		if _, err := e.runPowerShell(ctx, 10*time.Second, script); err != nil {
-			act.Status, act.Error = ActionFailed, err.Error()
-		} else {
-			e.forgetRogue(r.Alias)
-		}
-		actions = append(actions, act)
+	out, err := e.runPowerShell(ctx, 15*time.Second, script)
+	switch {
+	case err != nil:
+		return ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionFailed, Error: err.Error(), Description: "Failed to stop overlay service " + svc}, false
+	case strings.Contains(out, "STOPPED"):
+		e.forgetRogue(r.Alias)
+		return ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionExecuted, Description: fmt.Sprintf("Stopped service %s publishing rogue %s on %s", svc, r.Prefix, r.Alias)}, true
+	case strings.Contains(out, "NOT_RUNNING"):
+		e.forgetRogue(r.Alias)
+		return ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionNotNeeded, Description: "Overlay service already stopped: " + svc}, true
 	}
-	return actions, nil
+	return ActionResult{}, false
+}
+
+// containOverlay stops the owning service, or disables the adapter when the
+// service is unknown, missing or could not be stopped.
+func (e *WindowsEngine) containOverlay(ctx context.Context, r WindowsRoute) ActionResult {
+	if act, ok := e.stopOverlayService(ctx, r); ok {
+		return act
+	}
+	target := WindowsAdapterTargetPrefix + r.Alias
+	script := fmt.Sprintf(`Disable-NetAdapter -Name %s -Confirm:$false -ErrorAction Stop`, psQuote(r.Alias))
+	act := ActionResult{Type: ActionQuarantineService, Target: target, Status: ActionExecuted, Description: fmt.Sprintf("Disabled overlay adapter %s publishing rogue %s", r.Alias, r.Prefix)}
+	if _, err := e.runPowerShell(ctx, 10*time.Second, script); err != nil {
+		act.Status, act.Error = ActionFailed, err.Error()
+	} else {
+		e.forgetRogue(r.Alias)
+	}
+	return act
 }
 
 func (e *WindowsEngine) RestoreMeshServices(ctx context.Context, services []string) ([]ActionResult, error) {

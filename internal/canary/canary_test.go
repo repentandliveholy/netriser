@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -171,5 +172,67 @@ func TestCheckerContextCancellation(t *testing.T) {
 	}
 	if elapsed > 1*time.Second {
 		t.Fatalf("CheckFast did not respect cancellation, took %v", elapsed)
+	}
+}
+
+func listenTCP(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// A VPN kill-switch still lets DNS reach the tunnel's resolvers; one answering
+// target must not count as restored connectivity.
+func TestCheckerRequiresQuorumOfInternetTargets(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DNSCanaries = nil
+	cfg.ProbeTimeoutSec = 1
+	cfg.CanaryTargets = []string{listenTCP(t), "198.51.100.254:53421", "198.51.100.253:53421"}
+	cfg.HTTPFallbackURL = "http://canary.test/"
+	checker := NewChecker(cfg)
+	failHTTP := mockRoundTripper(func(req *http.Request) (*http.Response, error) { return nil, fmt.Errorf("blocked") })
+	checker.SetHTTPClient(&http.Client{Transport: failHTTP})
+
+	if res := checker.CheckFast(context.Background()); res.Healthy || res.InternetHealthy {
+		t.Fatalf("a single answering target was accepted: %+v", res)
+	}
+	if res := checker.CheckDetailed(context.Background()); res.Healthy {
+		t.Fatalf("detailed check accepted a single answering target: %+v", res)
+	}
+
+	cfg.CanaryTargets[1] = listenTCP(t)
+	if res := checker.CheckFast(context.Background()); !res.Healthy {
+		t.Fatalf("two answering targets must be healthy: %+v", res)
+	}
+
+	// An explicit quorum of 1 restores the previous behaviour.
+	cfg.CanaryTargets[1] = "198.51.100.254:53421"
+	cfg.MinHealthyTargets = 1
+	if res := checker.CheckFast(context.Background()); !res.Healthy {
+		t.Fatalf("min_healthy_targets: 1 must accept one target: %+v", res)
+	}
+}
+
+func TestCheckerQuorumIsCappedByConfiguredTargets(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DNSCanaries = nil
+	cfg.ProbeTimeoutSec = 1
+	cfg.CanaryTargets = []string{listenTCP(t)}
+	cfg.HTTPFallbackURL = ""
+	if res := NewChecker(cfg).CheckFast(context.Background()); !res.Healthy {
+		t.Fatalf("a host with one configured target must not become permanently unhealthy: %+v", res)
 	}
 }

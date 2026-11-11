@@ -567,35 +567,6 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 				quarantinedActions = append(quarantinedActions, netengine.ActionResult{Type: netengine.ActionQuarantineService, Target: "all", Status: netengine.ActionSkipped, Error: quarantineErr.Error(), Description: "Preserved overlays: quarantine preconditions not met"})
 			}
 			report.ActionsTaken = append(report.ActionsTaken, quarantinedActions...)
-
-			// Record exact quarantined services into state
-			curState, _ := w.stateMgr.LoadState()
-			if curState == nil {
-				curState = &WatchdogState{Version: CurrentStateVersion}
-			}
-
-			for _, act := range quarantinedActions {
-				if act.Type == netengine.ActionQuarantineService && (act.Status == netengine.ActionExecuted || act.Status == netengine.ActionPartial) {
-					// Check if already present
-					found := false
-					for _, q := range curState.QuarantinedServices {
-						if q.Name == act.Target {
-							found = true
-							break
-						}
-					}
-					if !found {
-						curState.QuarantinedServices = append(curState.QuarantinedServices, ServiceQuarantineRecord{
-							Name:           act.Target,
-							QuarantinedAt:  w.clock.Now(),
-							InitialState:   "active",
-							Attempts:       0,
-							NextRetryAfter: w.clock.Now().Add(5 * time.Minute),
-						})
-					}
-				}
-			}
-			_ = w.stateMgr.SaveState(curState)
 		}
 		if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
 			actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
@@ -625,6 +596,10 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 		w.logger.Info("[Stage 0] Failure count %d below threshold or observation mode active. No remediation attempted.", currentFails)
 	}
 
+	// Any stage may stop an overlay (Windows stops a WireGuard tunnel during
+	// route cleanup); record it so recovery restarts it later.
+	w.recordQuarantine(report.ActionsTaken)
+
 	for _, act := range report.ActionsTaken {
 		w.logger.Recovery("  - %s", act.String())
 	}
@@ -651,6 +626,41 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 	}
 
 	return report, nil
+}
+
+// recordQuarantine stores overlays stopped by remediation in the state.
+func (w *Watchdog) recordQuarantine(actions []netengine.ActionResult) {
+	var stopped []string
+	for _, act := range actions {
+		if act.Type == netengine.ActionQuarantineService && (act.Status == netengine.ActionExecuted || act.Status == netengine.ActionPartial) && act.Target != "" && act.Target != "all" {
+			stopped = append(stopped, act.Target)
+		}
+	}
+	if len(stopped) == 0 {
+		return
+	}
+	curState, _ := w.stateMgr.LoadState()
+	if curState == nil {
+		curState = &WatchdogState{Version: CurrentStateVersion}
+	}
+	for _, name := range stopped {
+		found := false
+		for _, q := range curState.QuarantinedServices {
+			if q.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			curState.QuarantinedServices = append(curState.QuarantinedServices, ServiceQuarantineRecord{
+				Name:           name,
+				QuarantinedAt:  w.clock.Now(),
+				InitialState:   "active",
+				NextRetryAfter: w.clock.Now().Add(5 * time.Minute),
+			})
+		}
+	}
+	_ = w.stateMgr.SaveState(curState)
 }
 
 func (w *Watchdog) restartNetwork(ctx context.Context, b netengine.Baseline) netengine.ActionResult {

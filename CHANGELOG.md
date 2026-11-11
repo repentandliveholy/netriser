@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.6
+
+- Connectivity now requires at least two distinct answering internet probes
+  (`min_healthy_targets`, default 2, capped at the number configured). A single
+  answer can be a false positive: a WireGuard kill-switch still permits DNS to
+  the tunnel's DNS servers, such as 1.1.1.1, so 1.2.5 reported recovery while
+  the host stayed cut off. Set `min_healthy_targets: 1` for the old behaviour.
+- Windows: stop a WireGuard tunnel that captured the default route already at
+  stage 1, because route cleanup cannot lift its kill-switch.
+- Overlays stopped at any stage are recorded and restarted after recovery
+  (previously only stage 2 recorded them).
+
 ## 1.2.5
 
 - Windows: fix the default-route listing used by route cleanup and overlay

@@ -36,13 +36,16 @@ type windowsRogueEvidence struct {
 const windowsRogueEvidenceTTL = 10 * time.Minute
 
 // windowsDefaultRoutesScript lists default and split-default IPv4 routes as
-// "alias|prefix|adapter description" lines.
+// "alias|prefix|effective metric|adapter description" lines. The effective
+// metric is what Windows compares: route metric plus interface metric.
 const windowsDefaultRoutesScript = `
 foreach ($p in @('0.0.0.0/0', '0.0.0.0/1', '128.0.0.0/1')) {
     Get-NetRoute -DestinationPrefix $p -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
         $adapter = Get-NetAdapter -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue
         $desc = if ($adapter) { $adapter.InterfaceDescription } else { '' }
-        Write-Output "$($_.InterfaceAlias)|$($_.DestinationPrefix)|$desc"
+        $ipif = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+        $metric = if ($ipif) { [int]$_.RouteMetric + [int]$ipif.InterfaceMetric } else { -1 }
+        Write-Output "$($_.InterfaceAlias)|$($_.DestinationPrefix)|$metric|$desc"
     }
 }
 `

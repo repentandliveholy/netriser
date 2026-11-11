@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.4
+
+- Windows: an overlay default route with a worse effective metric (route plus
+  interface metric) than the physical default route carries no traffic and is
+  no longer treated as rogue, so ZeroTier's metric-9999 route is not removed and
+  its service is not stopped during unrelated outages. Split /1 routes and
+  WireGuard tunnels (kill-switch) remain suspect regardless of metric.
+
 ## 1.2.3
 
 - Windows: recover from a WireGuard tunnel that captures the default route,

@@ -38,14 +38,14 @@ func (h *fakeWindowsHost) Run(_ context.Context, name string, args ...string) (s
 		}
 		return "MISSING", nil
 	case strings.Contains(script, "New-NetRoute"):
-		h.routes = append(h.routes, "Ethernet|0.0.0.0/0|Realtek PCIe GBE Family Controller")
+		h.routes = append(h.routes, "Ethernet|0.0.0.0/0|25|Realtek PCIe GBE Family Controller")
 		return "", nil
 	case strings.Contains(script, "Get-NetRoute -DestinationPrefix $p"):
 		return strings.Join(h.routes, "\n"), nil
 	case strings.HasPrefix(script, "Remove-NetRoute"):
 		var kept []string
 		for _, r := range h.routes {
-			parts := strings.SplitN(r, "|", 3)
+			parts := strings.SplitN(r, "|", 4)
 			if !strings.Contains(script, psQuote(parts[1])) || !strings.Contains(script, psQuote(parts[0])) {
 				kept = append(kept, r)
 			}
@@ -85,8 +85,8 @@ func TestWindowsWireGuardKillSwitchTunnelIsStoppedAfterRouteCleanup(t *testing.T
 	const wgService = "WireGuardTunnel$wg-hetzner-ovs-server-1"
 	h := &fakeWindowsHost{
 		routes: []string{
-			"Ethernet|0.0.0.0/0|Intel(R) Ethernet",
-			"wg-hetzner-ovs-server-1|0.0.0.0/0|WireGuard Tunnel",
+			"Ethernet|0.0.0.0/0|25|Intel(R) Ethernet",
+			"wg-hetzner-ovs-server-1|0.0.0.0/0|5|WireGuard Tunnel",
 		},
 		services: map[string]bool{wgService: true, "Tailscale": true},
 	}
@@ -125,7 +125,7 @@ func TestWindowsWireGuardKillSwitchTunnelIsStoppedAfterRouteCleanup(t *testing.T
 
 func TestWindowsQuarantineWithoutEvidencePreservesOverlays(t *testing.T) {
 	h := &fakeWindowsHost{
-		routes:   []string{"Ethernet|0.0.0.0/0|Intel(R) Ethernet"},
+		routes:   []string{"Ethernet|0.0.0.0/0|25|Intel(R) Ethernet"},
 		services: map[string]bool{"Tailscale": true},
 	}
 	e := newFakeWindowsEngine(h)
@@ -144,7 +144,7 @@ func TestWindowsQuarantineWithoutEvidencePreservesOverlays(t *testing.T) {
 
 func TestWindowsAllowedDefaultInterfaceIsUntouched(t *testing.T) {
 	h := &fakeWindowsHost{
-		routes:   []string{"Tailscale|0.0.0.0/0|Tailscale Tunnel"},
+		routes:   []string{"Tailscale|0.0.0.0/0|5|Tailscale Tunnel"},
 		services: map[string]bool{"Tailscale": true},
 	}
 	e := newFakeWindowsEngine(h, "Tailscale")

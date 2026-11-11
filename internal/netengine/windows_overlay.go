@@ -1,7 +1,9 @@
 package netengine
 
 import (
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -37,20 +39,26 @@ var windowsRoutePrefixes = []string{"0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1"}
 type WindowsRoute struct {
 	Alias       string
 	Prefix      string
+	Metric      int // route metric + interface metric; -1 when unknown
 	Description string
 }
 
-// ParseWindowsRoutes parses "alias|prefix|description" lines.
+// ParseWindowsRoutes parses "alias|prefix|effective metric|description" lines.
 func ParseWindowsRoutes(output string) []WindowsRoute {
 	var routes []WindowsRoute
 	for _, line := range strings.Split(output, "\n") {
-		parts := strings.SplitN(strings.TrimSpace(line), "|", 3)
+		parts := strings.SplitN(strings.TrimSpace(line), "|", 4)
 		if len(parts) < 2 {
 			continue
 		}
-		r := WindowsRoute{Alias: strings.TrimSpace(parts[0]), Prefix: strings.TrimSpace(parts[1])}
-		if len(parts) == 3 {
-			r.Description = strings.TrimSpace(parts[2])
+		r := WindowsRoute{Alias: strings.TrimSpace(parts[0]), Prefix: strings.TrimSpace(parts[1]), Metric: -1}
+		if len(parts) >= 3 {
+			if m, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil && m >= 0 {
+				r.Metric = m
+			}
+		}
+		if len(parts) == 4 {
+			r.Description = strings.TrimSpace(parts[3])
 		}
 		if r.Alias != "" && r.Prefix != "" {
 			routes = append(routes, r)
@@ -64,17 +72,32 @@ func (r WindowsRoute) IsWindowsWireGuard() bool {
 	return windowsWireGuardRegex.MatchString(r.Description) || windowsWireGuardRegex.MatchString(r.Alias)
 }
 
-// WindowsRogueRoutes returns overlay default routes that are not permitted by
-// allowed_default_interfaces.
+func (r WindowsRoute) isOverlay() bool {
+	return windowsRogueOverlayRegex.MatchString(r.Alias) || windowsRogueOverlayRegex.MatchString(r.Description)
+}
+
+// WindowsRogueRoutes returns overlay default routes that capture traffic and
+// are not permitted by allowed_default_interfaces. A full 0.0.0.0/0 overlay
+// route with a worse effective metric than the physical default route (for
+// example ZeroTier's metric 9999 route) carries no traffic and is left alone.
+// Split /1 routes always win over /0, and WireGuard is always suspect because
+// its kill-switch blocks untunneled traffic regardless of metrics.
 func WindowsRogueRoutes(routes []WindowsRoute, allowed func(string) bool) []WindowsRoute {
+	physicalBest := math.MaxInt
+	for _, r := range routes {
+		if r.Prefix == "0.0.0.0/0" && !r.isOverlay() && r.Metric >= 0 && r.Metric < physicalBest {
+			physicalBest = r.Metric
+		}
+	}
 	var rogue []WindowsRoute
 	for _, r := range routes {
-		if allowed != nil && allowed(r.Alias) {
+		if (allowed != nil && allowed(r.Alias)) || !r.isOverlay() {
 			continue
 		}
-		if windowsRogueOverlayRegex.MatchString(r.Alias) || windowsRogueOverlayRegex.MatchString(r.Description) {
-			rogue = append(rogue, r)
+		if r.Prefix == "0.0.0.0/0" && !r.IsWindowsWireGuard() && r.Metric > physicalBest {
+			continue
 		}
+		rogue = append(rogue, r)
 	}
 	return rogue
 }

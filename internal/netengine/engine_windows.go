@@ -132,12 +132,20 @@ func (e *WindowsEngine) DetectBaseline(ctx context.Context) (Baseline, error) {
 	if e.cfg.ManagementGateway != "" {
 		b.Gateway = e.cfg.ManagementGateway
 	}
+	if b.Interface != "" || b.Gateway != "" {
+		b.Source = BaselineSourceConfig
+	}
 
+	// A known uplink stays authoritative while it is disabled or has lost its
+	// address, so stage 3 can bring it back (HasKnownInterface).
 	saved, _ := LoadSavedBaseline(e.cfg.StateDir)
 	if b.Interface == "" && saved.Interface != "" {
 		b.Interface = saved.Interface
 		if b.Gateway == "" {
 			b.Gateway = saved.Gateway
+		}
+		if b.Source == "" {
+			b.Source = BaselineSourceCached
 		}
 	}
 
@@ -412,13 +420,65 @@ func (e *WindowsEngine) RestoreMeshServices(ctx context.Context, services []stri
 	return actions, firstErr
 }
 
+// RestartNetworkStack brings the physical uplink back: it enables an adapter
+// that was disabled (for example from the Network Connections window),
+// otherwise restarts it, waits for a usable IPv4 address, renews DHCP if
+// needed and restores the default route through the known gateway.
 func (e *WindowsEngine) RestartNetworkStack(ctx context.Context, b Baseline) error {
-	if b.Interface != "" {
-		psScript := fmt.Sprintf(`Restart-NetAdapter -Name '%s' -Confirm:$false -ErrorAction SilentlyContinue`, b.Interface)
-		_, _ = e.runPowerShell(ctx, 10*time.Second, psScript)
+	if b.Interface == "" {
+		_, _ = e.runCmd(ctx, 15*time.Second, "ipconfig.exe", "/renew")
+		return fmt.Errorf("physical interface unknown; renewed DHCP on all adapters")
 	}
-	_, _ = e.runCmd(ctx, 5*time.Second, "ipconfig.exe", "/renew")
+	out, err := e.runPowerShell(ctx, 40*time.Second, windowsUplinkRecoveryScript(b.Interface))
+	if err != nil {
+		return fmt.Errorf("recover adapter %s: %w", b.Interface, err)
+	}
+	if strings.Contains(out, "MISSING") {
+		return fmt.Errorf("adapter %s not found", b.Interface)
+	}
+	if !strings.Contains(out, "UP ") {
+		_, _ = e.runCmd(ctx, 15*time.Second, "ipconfig.exe", "/renew", b.Interface)
+	}
+	if b.Gateway != "" {
+		_, _ = e.runPowerShell(ctx, 8*time.Second, windowsDefaultRouteScript(b.Interface, b.Gateway))
+	}
+	if !strings.Contains(out, "UP ") {
+		return fmt.Errorf("adapter %s did not obtain a usable IPv4 address (%s)", b.Interface, strings.TrimSpace(out))
+	}
 	return nil
+}
+
+// windowsUplinkRecoveryScript enables or restarts an adapter and waits up to
+// 25 seconds for it to be Up with a non-APIPA IPv4 address.
+func windowsUplinkRecoveryScript(alias string) string {
+	return fmt.Sprintf(`
+$name = %s
+$a = Get-NetAdapter -Name $name -ErrorAction SilentlyContinue
+if (-not $a) { Write-Output 'MISSING'; return }
+if ($a.Status -eq 'Disabled') {
+    Enable-NetAdapter -Name $name -Confirm:$false -ErrorAction Stop
+    Write-Output 'ENABLED'
+} else {
+    Restart-NetAdapter -Name $name -Confirm:$false -ErrorAction Stop
+    Write-Output 'RESTARTED'
+}
+$deadline = (Get-Date).AddSeconds(25)
+do {
+    Start-Sleep -Milliseconds 500
+    $a = Get-NetAdapter -Name $name -ErrorAction SilentlyContinue
+    $ip = Get-NetIPAddress -InterfaceAlias $name -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+} while ((-not $a -or $a.Status -ne 'Up' -or -not $ip) -and (Get-Date) -lt $deadline)
+if ($a -and $a.Status -eq 'Up' -and $ip) { Write-Output "UP $($ip.IPAddress)" } else { Write-Output "STATUS $($a.Status)" }
+`, psQuote(alias))
+}
+
+func windowsDefaultRouteScript(alias, gateway string) string {
+	return fmt.Sprintf(`
+if (-not (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceAlias %s -NextHop %s -ErrorAction SilentlyContinue)) {
+    New-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceAlias %s -NextHop %s -RouteMetric 10 -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+}
+`, psQuote(alias), psQuote(gateway), psQuote(alias), psQuote(gateway))
 }
 
 func (e *WindowsEngine) EmergencyReboot(ctx context.Context, reason string) error {

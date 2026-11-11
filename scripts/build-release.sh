@@ -60,7 +60,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.2.3: Windows recovery from WireGuard full tunnels with kill-switch, evidence-based overlay quarantine with correct Windows service names, and allowed_default_interfaces on Windows.",
+  "release_notes": "NetRiser 1.2.3: Windows recovery from WireGuard full tunnels with kill-switch and from a disabled uplink adapter, evidence-based overlay quarantine with correct Windows service names, and allowed_default_interfaces on Windows.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},

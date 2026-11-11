@@ -119,7 +119,12 @@ in stages: its routes are removed first, then its service is stopped
 (`WireGuardTunnel$<tunnel>` for WireGuard, `Tailscale`, `ZeroTierOneService`,
 `netbird`, `nebula`) and restarted once connectivity has recovered. Stopping a
 WireGuard tunnel also lifts its kill-switch. Only overlays that published a
-rogue default route are touched. Emergency reboot is
+rogue default route are touched.
+
+If the physical uplink adapter is disabled by hand, NetRiser on Windows keeps
+the last confirmed adapter as the uplink; at stage 3 it enables the adapter,
+waits for an IPv4 address and restores the default route. If another working
+connection keeps the host online, nothing is changed. Emergency reboot is
 disabled by default and should remain disabled unless unattended reboot is an
 explicit operational requirement.
 

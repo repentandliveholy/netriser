@@ -11,6 +11,10 @@
 - Windows: honour `allowed_default_interfaces`; Hyper-V virtual switches are not
   treated as rogue routes.
 - Windows: a quarantined service removed in the meantime is not retried forever.
+- Windows: recover an uplink adapter disabled by hand (for example from Network
+  Connections). The last confirmed adapter stays known while it has no address;
+  stage 3 enables it, waits for DHCP and restores the default route. Previously
+  this case was skipped as an invalid baseline, and a reboot does not undo it.
 
 ## 1.2.2
 

@@ -10,8 +10,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/repentandliveholy/netriser/internal/config"
@@ -20,6 +20,82 @@ import (
 type WindowsEngine struct {
 	cfg    *config.Config
 	runner CommandRunner
+
+	// Overlay routes removed by stage 1. Route cleanup erases the evidence that
+	// stage 2 needs (and cannot lift a WireGuard kill-switch), so the daemon
+	// remembers the owners of recently removed rogue routes.
+	mu    sync.Mutex
+	rogue map[string]windowsRogueEvidence
+}
+
+type windowsRogueEvidence struct {
+	route WindowsRoute
+	seen  time.Time
+}
+
+const windowsRogueEvidenceTTL = 10 * time.Minute
+
+// windowsDefaultRoutesScript lists default and split-default IPv4 routes as
+// "alias|prefix|adapter description" lines.
+const windowsDefaultRoutesScript = `
+foreach ($p in @('0.0.0.0/0', '0.0.0.0/1', '128.0.0.0/1')) {
+    Get-NetRoute -DestinationPrefix $p -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+        $adapter = Get-NetAdapter -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue
+        $desc = if ($adapter) { $adapter.InterfaceDescription } else { '' }
+        Write-Output "$($_.InterfaceAlias)|$($_.DestinationPrefix)|$desc"
+    }
+}
+`
+
+func (e *WindowsEngine) rogueRoutes(ctx context.Context) ([]WindowsRoute, error) {
+	out, err := e.runPowerShell(ctx, 8*time.Second, windowsDefaultRoutesScript)
+	if err != nil {
+		return nil, err
+	}
+	return WindowsRogueRoutes(ParseWindowsRoutes(out), e.cfg.IsAllowedDefaultInterface), nil
+}
+
+func (e *WindowsEngine) rememberRogue(routes []WindowsRoute) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.rogue == nil {
+		e.rogue = map[string]windowsRogueEvidence{}
+	}
+	for _, r := range routes {
+		e.rogue[r.Alias] = windowsRogueEvidence{route: r, seen: time.Now()}
+	}
+}
+
+// rogueOwners merges current rogue routes with recently removed ones, one per
+// interface, and forgets expired evidence.
+func (e *WindowsEngine) rogueOwners(current []WindowsRoute) []WindowsRoute {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	seen := map[string]bool{}
+	var owners []WindowsRoute
+	for _, r := range current {
+		if !seen[r.Alias] {
+			seen[r.Alias] = true
+			owners = append(owners, r)
+		}
+	}
+	for alias, ev := range e.rogue {
+		if time.Since(ev.seen) > windowsRogueEvidenceTTL || e.cfg.IsAllowedDefaultInterface(alias) {
+			delete(e.rogue, alias)
+			continue
+		}
+		if !seen[alias] {
+			seen[alias] = true
+			owners = append(owners, ev.route)
+		}
+	}
+	return owners
+}
+
+func (e *WindowsEngine) forgetRogue(alias string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.rogue, alias)
 }
 
 func NewEngine(cfg *config.Config) NetworkEngine {
@@ -32,9 +108,6 @@ func NewEngineWithRunner(cfg *config.Config, runner CommandRunner) NetworkEngine
 	}
 	return &WindowsEngine{cfg: cfg, runner: runner}
 }
-
-// Regex matching virtual/mesh Windows adapter names or descriptions
-var windowsOverlayRegex = regexp.MustCompile(`(?i)(netbird|wt[0-9]|zerotier|zt[a-z0-9]|tailscale|nebula|wireguard|wintun|tap-windows|openvpn|hyper-v|vethernet)`)
 
 func (e *WindowsEngine) runCmd(ctx context.Context, timeout time.Duration, name string, args ...string) (string, error) {
 	if timeout > 0 {
@@ -192,41 +265,28 @@ func (e *WindowsEngine) RemovePolicyRouting(ctx context.Context, b Baseline) err
 func (e *WindowsEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]ActionResult, error) {
 	var actions []ActionResult
 
-	// Detect and remove rogue default routes on overlay interfaces
-	psScript := `
-$removed = @()
-Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
-    $alias = $_.InterfaceAlias
-    $adapter = Get-NetAdapter -Name $alias -ErrorAction SilentlyContinue
-    $desc = if ($adapter) { $adapter.InterfaceDescription } else { "" }
-    if ($alias -match '(?i)(netbird|wt|zerotier|zt|tailscale|nebula|wireguard|wintun|tap)' -or $desc -match '(?i)(netbird|zerotier|tailscale|nebula|wintun|tap)') {
-        Remove-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceAlias $alias -Confirm:$false -ErrorAction SilentlyContinue
-        $removed += "Removed rogue 0.0.0.0/0 on overlay interface $alias"
-    }
-}
-# Also remove /1 rogue half-routes
-foreach ($half in @('0.0.0.0/1', '128.0.0.0/1')) {
-    Get-NetRoute -DestinationPrefix $half -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
-        $alias = $_.InterfaceAlias
-        Remove-NetRoute -DestinationPrefix $half -InterfaceAlias $alias -Confirm:$false -ErrorAction SilentlyContinue
-        $removed += "Removed rogue $half on $alias"
-    }
-}
-$removed | Out-String
-`
-	out, err := e.runPowerShell(ctx, 5*time.Second, psScript)
-	if err == nil && out != "" {
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				actions = append(actions, ActionResult{
-					Type:        ActionCleanRoute,
-					Target:      line,
-					Status:      ActionExecuted,
-					Description: line,
-				})
-			}
+	// Remove default and split-default routes published by VPN/mesh adapters,
+	// except interfaces listed in allowed_default_interfaces.
+	rogue, err := e.rogueRoutes(ctx)
+	if err != nil {
+		actions = append(actions, ActionResult{Type: ActionCleanRoute, Target: "routes", Status: ActionFailed, Error: err.Error(), Description: "Could not list default routes"})
+	}
+	e.rememberRogue(rogue)
+	for _, r := range rogue {
+		script := fmt.Sprintf(`Remove-NetRoute -DestinationPrefix %s -InterfaceAlias %s -Confirm:$false -ErrorAction Stop`, psQuote(r.Prefix), psQuote(r.Alias))
+		act := ActionResult{
+			Type:        ActionCleanRoute,
+			Target:      r.Prefix + " on " + r.Alias,
+			Status:      ActionExecuted,
+			Description: fmt.Sprintf("Removed rogue %s on overlay interface %s", r.Prefix, r.Alias),
 		}
+		if _, err := e.runPowerShell(ctx, 5*time.Second, script); err != nil {
+			act.Status, act.Error = ActionFailed, err.Error()
+		}
+		if r.IsWindowsWireGuard() {
+			act.Description += " (a WireGuard kill-switch may still block traffic; stage 2 stops the tunnel service)"
+		}
+		actions = append(actions, act)
 	}
 
 	// Re-assert physical adapter state and default route
@@ -269,77 +329,87 @@ Set-NetIPInterface -InterfaceAlias '%s' -AddressFamily IPv4 -InterfaceMetric 10 
 	return actions, nil
 }
 
+// QuarantineMeshServices stops only the overlays that published a rogue
+// default route (now or during recent route cleanup). Stopping a WireGuard
+// tunnel service also removes its kill-switch firewall rules. Overlays without
+// a known service are contained by disabling their adapter.
 func (e *WindowsEngine) QuarantineMeshServices(ctx context.Context) ([]ActionResult, error) {
+	current, err := e.rogueRoutes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list default routes: %w", err)
+	}
+	owners := e.rogueOwners(current)
+	if len(owners) == 0 {
+		return nil, fmt.Errorf("no rogue overlay default route detected; preserving overlays")
+	}
+
 	var actions []ActionResult
-
-	for _, s := range e.cfg.MonitoredServices {
-		psScript := fmt.Sprintf(`
-$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq 'Running') {
-    Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue
-    Write-Output "STOPPED"
-}
-`, s, s)
-		out, err := e.runPowerShell(ctx, 8*time.Second, psScript)
-		if err == nil && strings.Contains(out, "STOPPED") {
-			actions = append(actions, ActionResult{
-				Type:        ActionQuarantineService,
-				Target:      s,
-				Status:      ActionExecuted,
-				Description: fmt.Sprintf("Stopped Windows service: %s", s),
-			})
-		}
-	}
-
-	// Disable overlay adapters
-	disableScript := `
-Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-    $_.InterfaceAlias -match '(?i)(netbird|wt|zerotier|zt|tailscale|nebula|wintun)' -or
-    $_.InterfaceDescription -match '(?i)(netbird|zerotier|tailscale|nebula|wintun)'
-} | ForEach-Object {
-    Disable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Output $_.Name
-}
-`
-	out, err := e.runPowerShell(ctx, 10*time.Second, disableScript)
-	if err == nil && out != "" {
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				actions = append(actions, ActionResult{
-					Type:        ActionCleanRoute,
-					Target:      line,
-					Status:      ActionExecuted,
-					Description: fmt.Sprintf("Disabled adapter: %s", line),
-				})
+	for _, r := range owners {
+		if svc := WindowsOverlayService(r); svc != "" {
+			script := fmt.Sprintf(`
+$svc = Get-Service -Name %s -ErrorAction SilentlyContinue
+if (-not $svc) { Write-Output 'MISSING' }
+elseif ($svc.Status -ne 'Running') { Write-Output 'NOT_RUNNING' }
+else { Stop-Service -Name %s -Force -ErrorAction Stop; Write-Output 'STOPPED' }
+`, psQuote(svc), psQuote(svc))
+			out, err := e.runPowerShell(ctx, 15*time.Second, script)
+			switch {
+			case err != nil:
+				actions = append(actions, ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionFailed, Error: err.Error(), Description: "Failed to stop overlay service " + svc})
+			case strings.Contains(out, "STOPPED"):
+				e.forgetRogue(r.Alias)
+				actions = append(actions, ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionExecuted, Description: fmt.Sprintf("Stopped service %s publishing rogue %s on %s", svc, r.Prefix, r.Alias)})
+				continue
+			case strings.Contains(out, "NOT_RUNNING"):
+				e.forgetRogue(r.Alias)
+				actions = append(actions, ActionResult{Type: ActionQuarantineService, Target: svc, Status: ActionNotNeeded, Description: "Overlay service already stopped: " + svc})
+				continue
 			}
+			// Missing or failed service: fall back to disabling the adapter.
 		}
+		target := WindowsAdapterTargetPrefix + r.Alias
+		script := fmt.Sprintf(`Disable-NetAdapter -Name %s -Confirm:$false -ErrorAction Stop`, psQuote(r.Alias))
+		act := ActionResult{Type: ActionQuarantineService, Target: target, Status: ActionExecuted, Description: fmt.Sprintf("Disabled overlay adapter %s publishing rogue %s", r.Alias, r.Prefix)}
+		if _, err := e.runPowerShell(ctx, 10*time.Second, script); err != nil {
+			act.Status, act.Error = ActionFailed, err.Error()
+		} else {
+			e.forgetRogue(r.Alias)
+		}
+		actions = append(actions, act)
 	}
-
 	return actions, nil
 }
 
 func (e *WindowsEngine) RestoreMeshServices(ctx context.Context, services []string) ([]ActionResult, error) {
 	var actions []ActionResult
+	var firstErr error
 	for _, s := range services {
 		if s == "" {
 			continue
 		}
-		psScript := fmt.Sprintf(`Start-Service -Name '%s' -ErrorAction SilentlyContinue`, s)
-		res := ActionResult{
-			Type:        ActionRestoreService,
-			Target:      s,
-			Status:      ActionExecuted,
-			Description: fmt.Sprintf("Started service: %s", s),
+		var script string
+		res := ActionResult{Type: ActionRestoreService, Target: s, Status: ActionExecuted}
+		// A service or adapter removed while quarantined has nothing to restore.
+		if alias, ok := strings.CutPrefix(s, WindowsAdapterTargetPrefix); ok {
+			script = fmt.Sprintf(`if (Get-NetAdapter -Name %s -ErrorAction SilentlyContinue) { Enable-NetAdapter -Name %s -Confirm:$false -ErrorAction Stop } else { Write-Output 'MISSING' }`, psQuote(alias), psQuote(alias))
+			res.Description = "Enabled overlay adapter: " + alias
+		} else {
+			script = fmt.Sprintf(`if (Get-Service -Name %s -ErrorAction SilentlyContinue) { Start-Service -Name %s -ErrorAction Stop } else { Write-Output 'MISSING' }`, psQuote(s), psQuote(s))
+			res.Description = "Started service: " + s
 		}
-		if _, err := e.runPowerShell(ctx, 8*time.Second, psScript); err != nil {
-			res.Status = ActionFailed
-			res.Error = err.Error()
+		out, err := e.runPowerShell(ctx, 15*time.Second, script)
+		switch {
+		case err != nil:
+			res.Status, res.Error = ActionFailed, err.Error()
+			if firstErr == nil {
+				firstErr = err
+			}
+		case strings.Contains(out, "MISSING"):
+			res.Status, res.Description = ActionNotNeeded, "No longer installed; nothing to restore: "+s
 		}
 		actions = append(actions, res)
 	}
-	_, _ = e.runPowerShell(ctx, 5*time.Second, `Get-NetAdapter | Where-Object { $_.InterfaceDescription -match '(?i)(netbird|zerotier|tailscale|nebula|wintun)' } | Enable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue`)
-	return actions, nil
+	return actions, firstErr
 }
 
 func (e *WindowsEngine) RestartNetworkStack(ctx context.Context, b Baseline) error {

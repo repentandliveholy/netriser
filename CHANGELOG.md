@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.3
+
+- Windows: recover from a WireGuard tunnel that captures the default route,
+  including with the kill-switch enabled, by stopping its
+  `WireGuardTunnel$<name>` service; the tunnel is restarted after recovery.
+- Windows: quarantine only overlays that published a rogue default route, using
+  Windows service names (`Tailscale`, `ZeroTierOneService`, `netbird`, `nebula`).
+  Unrelated overlays such as a Tailscale management link are no longer disabled.
+- Windows: honour `allowed_default_interfaces`; Hyper-V virtual switches are not
+  treated as rogue routes.
+- Windows: a quarantined service removed in the meantime is not retried forever.
+
 ## 1.2.2
 
 - Ask during installation whether to start in read-only observation mode;

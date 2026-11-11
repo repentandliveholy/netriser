@@ -112,7 +112,14 @@ Tailscale exit node, add that interface to `allowed_default_interfaces`.
 Otherwise NetRiser treats the overlay default route as a rogue route and, with
 `allow_service_quarantine` enabled, may stop the overlay service. Hosts that
 only advertise an exit node for other devices keep their default route on the
-physical uplink and need no change. Emergency reboot is
+physical uplink and need no change.
+
+On Windows, a VPN or mesh client that captures the default route is contained
+in stages: its routes are removed first, then its service is stopped
+(`WireGuardTunnel$<tunnel>` for WireGuard, `Tailscale`, `ZeroTierOneService`,
+`netbird`, `nebula`) and restarted once connectivity has recovered. Stopping a
+WireGuard tunnel also lifts its kill-switch. Only overlays that published a
+rogue default route are touched. Emergency reboot is
 disabled by default and should remain disabled unless unattended reboot is an
 explicit operational requirement.
 

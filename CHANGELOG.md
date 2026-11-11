@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2
+
+- Ask during installation whether to start in read-only observation mode;
+  `NETRISER_OBSERVATION_MODE` selects it for unattended installs.
+- Add `netriser observe on|off|status` and `init-config --observation-mode=bool`.
+- Document `allowed_default_interfaces` for hosts that send their own traffic
+  through a Tailscale or other overlay exit node.
+
 ## 1.2.1
 
 - Ask about automatic updates and emergency reboot during installation, including

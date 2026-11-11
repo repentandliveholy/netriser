@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.2.1}"
+VERSION="${VERSION:-1.2.2}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
@@ -60,7 +60,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.2.1: interactive installation choices, complete configuration, 15-second outage recovery, DHCP recovery verification, and a separate reboot outage timer.",
+  "release_notes": "NetRiser 1.2.2: optional read-only observation mode during installation, netriser observe on|off|status, and documented allowed_default_interfaces for hosts using an overlay exit node.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},
@@ -91,7 +91,7 @@ main{width:min(1040px,calc(100% - 36px));margin:auto}.top{padding:22px 0;border-
 </style></head><body><main>
 <header class="top"><div class="brand">NETRISER</div><a href="https://github.com/repentandliveholy/netriser">GitHub ↗</a></header>
 <section class="hero" style="border:0"><div class="eyebrow">Network resilience · v${VERSION}</div><h1>Lost access to a remote computer?</h1><p>A network change can cut off the very connection you need to fix it. NetRiser attempts automatic recovery of interfaces, routes, and DNS, helping you get back in before someone has to visit the machine and restart it.</p><div class="actions"><a class="button" href="bin/netriser-linux-amd64">Download Linux x86_64</a><a class="button secondary" href="https://github.com/repentandliveholy/netriser">Source and releases</a></div></section>
-<section><h2>Install</h2><p class="muted">The installer shows each step, creates configuration, and asks about automatic updates and emergency reboot. New installations default to updates on and reboot off; Enter preserves existing settings on a rerun. Linux and macOS need administrator privileges; Windows requires elevated PowerShell.</p><pre>curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh</pre><pre>irm https://netriser.repentandliveholy.org/install.ps1 | iex</pre></section>
+<section><h2>Install</h2><p class="muted">The installer shows each step, creates configuration, and asks about read-only observation mode, automatic updates and emergency reboot. New installations default to observation off, updates on and reboot off; Enter preserves existing settings on a rerun. Linux and macOS need administrator privileges; Windows requires elevated PowerShell.</p><pre>curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh</pre><pre>irm https://netriser.repentandliveholy.org/install.ps1 | iex</pre></section>
 <section><h2>Downloads</h2><p class="muted">Release binaries are standalone Go executables. Verify a download against the published SHA-256 file.</p><div class="grid">
 <div class="card"><h3>Linux · x86_64</h3><a href="bin/netriser-linux-amd64">netriser-linux-amd64</a></div><div class="card"><h3>Linux · ARM64</h3><a href="bin/netriser-linux-arm64">netriser-linux-arm64</a></div><div class="card"><h3>Windows · x86_64</h3><a href="bin/netriser-windows-amd64.exe">netriser-windows-amd64.exe</a></div><div class="card"><h3>macOS · Apple Silicon</h3><a href="bin/netriser-darwin-arm64">netriser-darwin-arm64</a></div><div class="card"><h3>macOS · Intel</h3><a href="bin/netriser-darwin-amd64">netriser-darwin-amd64</a></div></div><p class="links"><a href="sha256sums.txt">SHA-256 checksums</a><a href="version.json">Update manifest</a><a href="README.md">Documentation</a><a href="LICENSE">MIT license</a><a href="THIRD_PARTY_NOTICES">Third-party licenses</a></p></section>
 <section><h2>Migration</h2><p class="muted">The installer keeps the existing configuration, state, logs, reboot policy, and update settings. It stops the old service, runs <code>netriser migrate</code>, then installs and starts the new service. The old service is restored if migration or service startup fails.</p><p class="links"><a href="MIGRATION.md">Migration guide</a><a href="config.example.yaml">Example configuration</a><a href="README.md">Full documentation</a></p></section>

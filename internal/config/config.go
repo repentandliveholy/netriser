@@ -389,6 +389,22 @@ func SetAutoUpdateEnabled(path string, enabled bool) error {
 	return setBoolSetting(path, "auto_update", enabled)
 }
 
+// SetObservationMode switches between log-only operation and active recovery.
+func SetObservationMode(path string, enabled bool) error {
+	return setBoolSetting(path, "observation_mode", enabled)
+}
+
+func applyBoolSetting(cfg *Config, key string, enabled bool) {
+	switch key {
+	case "auto_update":
+		cfg.AutoUpdate = enabled
+	case "observation_mode":
+		cfg.ObservationMode = enabled
+	default:
+		cfg.EnableReboot = enabled
+	}
+}
+
 func setBoolSetting(path, key string, enabled bool) error {
 	if path == "" {
 		path = DefaultConfigPath()
@@ -408,11 +424,7 @@ func setBoolSetting(path, key string, enabled bool) error {
 				return err
 			}
 			fresh := DefaultConfig()
-			if key == "auto_update" {
-				fresh.AutoUpdate = enabled
-			} else {
-				fresh.EnableReboot = enabled
-			}
+			applyBoolSetting(fresh, key, enabled)
 			freshConfig, err := yaml.Marshal(fresh)
 			if err != nil {
 				return err
@@ -434,11 +446,7 @@ func setBoolSetting(path, key string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	if key == "auto_update" {
-		cfg.AutoUpdate = enabled
-	} else {
-		cfg.EnableReboot = enabled
-	}
+	applyBoolSetting(cfg, key, enabled)
 	if err := cfg.Validate(); err != nil {
 		return err
 	}

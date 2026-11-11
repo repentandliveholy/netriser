@@ -122,15 +122,20 @@ try {
     & $TempPath version
     if ($LASTEXITCODE -ne 0) { throw 'Downloaded binary could not run.' }
     $EffectiveConfig = if ($LegacyConfig) { $LegacyConfig } else { Join-Path $NewData 'config.yaml' }
+    $ObserveDefault = 'false'
     $AutoDefault = 'true'
     $RebootDefault = 'false'
     if ((Test-Path -LiteralPath $EffectiveConfig) -or (Test-Path -LiteralPath (Join-Path $LegacyData 'config.yaml')) -or (Test-Path -LiteralPath (Join-Path $LegacyData 'state'))) {
+        $ObserveDefault = 'keep'
         $AutoDefault = 'keep'
         $RebootDefault = 'keep'
     }
+    Write-Host 'Observation mode is read-only: NetRiser records incidents but does not change routes, services, DNS or updates.'
+    Write-Host 'Turn on recovery later with: nr observe off'
+    $ObserveChoice = Choose-Setting 'Start in observation (read-only) mode' $env:NETRISER_OBSERVATION_MODE $ObserveDefault
     $AutoChoice = Choose-Setting 'Enable automatic updates' $env:NETRISER_AUTO_UPDATE $AutoDefault
     $RebootChoice = Choose-Setting 'Allow emergency host reboot (off by default; fresh installs wait at least 5 minutes)' $env:NETRISER_ENABLE_REBOOT $RebootDefault
-    Write-Host "Installation choices: automatic updates=$AutoChoice; emergency reboot=$RebootChoice"
+    Write-Host "Installation choices: observation mode=$ObserveChoice; automatic updates=$AutoChoice; emergency reboot=$RebootChoice"
 
     $Backup = Join-Path $ProgramData "NetRiser-Backups\migration-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))-$([guid]::NewGuid().ToString('N'))"
     Write-Host "[5/8] Saving rollback backup: $Backup"
@@ -166,6 +171,7 @@ try {
 
     Write-Host "[7/8] Creating or preserving configuration: $EffectiveConfig"
     $initArgs = @('--config', $EffectiveConfig, 'init-config')
+    if ($ObserveChoice -ne 'keep') { $initArgs += "--observation-mode=$ObserveChoice" }
     if ($AutoChoice -ne 'keep') { $initArgs += "--auto-update=$AutoChoice" }
     if ($RebootChoice -ne 'keep') { $initArgs += "--enable-reboot=$RebootChoice" }
     & $BinPath @initArgs
@@ -209,7 +215,7 @@ try {
     }
     Write-Host "NetRiser installed. Migration backup: $Backup" -ForegroundColor Green
     Write-Host "License: MIT; license texts installed in $LicenseDir"
-    Write-Host 'Commands: nr status; nr autoupdate on|off|status; nr reboot on|off|status'
+    Write-Host 'Commands: nr status; nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status'
     Write-Host "Logs: $(Join-Path $NewData 'logs\netriser.log') (legacy/custom paths are preserved)"
 } catch {
     Rollback-Install

@@ -48,11 +48,20 @@ fail_threshold_stage2: 2         # Quarantine a matching mesh service.
 fail_threshold_stage3: 3         # Restart supported network components.
 fail_threshold_stage4_reboot: 5  # Emergency host reboot, if enabled.
 
-# Observation mode logs failures without applying recovery actions.
+# Observation mode is read-only: it logs incidents and planned actions without
+# changing routes, services, DNS or the installed binary. Toggle: nr observe on|off
 observation_mode: false
 allow_route_sanitation: true
 allow_service_quarantine: true
 allow_network_restart: true
+
+# Overlay interfaces permitted to carry the host's default route. A default route
+# through any other overlay is treated as a rogue route, and its service (for
+# example tailscaled) can be stopped by quarantine. If this host sends its own
+# traffic through a Tailscale exit node, list the interface here:
+#   allowed_default_interfaces: ["tailscale0"]
+# Not needed when the host only advertises itself as an exit node for others.
+allowed_default_interfaces: []
 
 # Emergency reboot is disabled unless explicitly enabled.
 enable_reboot: false

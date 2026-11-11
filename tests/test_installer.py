@@ -47,7 +47,7 @@ class InstallerTests(unittest.TestCase):
         self.installer.write_text(script)
         self.env = dict(os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
                         NETRISER_NONINTERACTIVE="1", NETRISER_URL="https://installer.invalid")
-        for key in ("CONF_FILE", "NETRISER_AUTO_UPDATE", "NETRISER_ENABLE_REBOOT"):
+        for key in ("CONF_FILE", "NETRISER_AUTO_UPDATE", "NETRISER_ENABLE_REBOOT", "NETRISER_OBSERVATION_MODE"):
             self.env.pop(key, None)
         self.command("id", "echo 0\n")
         self.command("uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
@@ -103,10 +103,11 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         config = self.config.read_text()
-        for line in ("auto_update: true", "enable_reboot: false", "recovery_interval_sec: 15", "reboot_min_outage_sec: 300"):
+        for line in ("observation_mode: false", "auto_update: true", "enable_reboot: false", "recovery_interval_sec: 15", "reboot_min_outage_sec: 300"):
             self.assertIn(line, config)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertIn("[8/8]", result.stdout)
+        self.assertIn("Observation mode (no recovery actions): false", result.stdout)
         self.assertIn("Automatic updates: true", result.stdout)
         self.assertIn("Emergency reboot: false", result.stdout)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES"):
@@ -119,11 +120,11 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.config.read_text(), initial)
-        self.env.update(NETRISER_AUTO_UPDATE="true", NETRISER_ENABLE_REBOOT="false")
+        self.env.update(NETRISER_AUTO_UPDATE="true", NETRISER_ENABLE_REBOOT="false", NETRISER_OBSERVATION_MODE="true")
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         config = self.config.read_text()
-        for line in ("# existing", "auto_update: true", "enable_reboot: false", "check_interval_sec: 123", "state_dir: /custom/state"):
+        for line in ("# existing", "observation_mode: true", "auto_update: true", "enable_reboot: false", "check_interval_sec: 123", "state_dir: /custom/state"):
             self.assertIn(line, config)
 
     def test_bad_checksum_does_not_install(self):
@@ -188,8 +189,9 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
                     if not chunk:
                         break
                     output += chunk
-                    for label, answer in ((b"Enable automatic updates [Y/n]:", b"n\n"),
-                                          (b"[y/N]:", b"y\n")):
+                    for label, answer in ((b"Start in observation (read-only) mode [y/N]:", b"y\n"),
+                                          (b"Enable automatic updates [Y/n]:", b"n\n"),
+                                          (b"wait at least 5 minutes) [y/N]:", b"y\n")):
                         if label in output and label not in answered:
                             os.write(fd, answer)
                             answered.add(label)
@@ -200,10 +202,11 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
             os.close(fd)
             _, status = os.waitpid(pid, 0)
         self.assertEqual(os.waitstatus_to_exitcode(status), 0, output.decode(errors="replace"))
-        self.assertEqual(len(answered), 2, output.decode(errors="replace"))
+        self.assertEqual(len(answered), 3, output.decode(errors="replace"))
         config = self.config.read_text()
         self.assertIn("auto_update: false", config)
         self.assertIn("enable_reboot: true", config)
+        self.assertIn("observation_mode: true", config)
 
 
 if __name__ == "__main__":

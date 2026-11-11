@@ -10,7 +10,7 @@ import (
 
 // Initialize creates a complete configuration on a fresh installation. Existing
 // files, comments, paths and settings are preserved unless explicitly selected.
-func Initialize(path string, autoUpdate, reboot *bool) (*Config, error) {
+func Initialize(path string, autoUpdate, reboot, observation *bool) (*Config, error) {
 	if path == "" {
 		path = DefaultConfigPath()
 	}
@@ -21,6 +21,9 @@ func Initialize(path string, autoUpdate, reboot *bool) (*Config, error) {
 		}
 		if reboot != nil {
 			cfg.EnableReboot = *reboot
+		}
+		if observation != nil {
+			cfg.ObservationMode = *observation
 		}
 		if err := cfg.Validate(); err != nil {
 			return nil, err
@@ -56,6 +59,11 @@ func Initialize(path string, autoUpdate, reboot *bool) (*Config, error) {
 	}
 	if reboot != nil {
 		if err := SetRebootEnabled(path, *reboot); err != nil {
+			return nil, err
+		}
+	}
+	if observation != nil {
+		if err := SetObservationMode(path, *observation); err != nil {
 			return nil, err
 		}
 	}

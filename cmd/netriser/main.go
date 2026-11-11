@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	Version   = "1.2.1"
+	Version   = "1.2.2"
 	Commit    = "unknown"
 	BuildTime = "unknown"
 )
@@ -34,6 +34,7 @@ type cliOptions struct {
 	updateURL         string
 	installAutoUpdate string
 	installReboot     string
+	installObserve    string
 	commands          []string
 }
 
@@ -46,6 +47,8 @@ func parseCLIArgs(args []string) cliOptions {
 			opts.installAutoUpdate = strings.TrimPrefix(arg, "--auto-update=")
 		case strings.HasPrefix(arg, "--enable-reboot="):
 			opts.installReboot = strings.TrimPrefix(arg, "--enable-reboot=")
+		case strings.HasPrefix(arg, "--observation-mode="):
+			opts.installObserve = strings.TrimPrefix(arg, "--observation-mode=")
 		case arg == "-h" || arg == "--help":
 			opts.help = true
 		case arg == "-v" || arg == "--verbose":
@@ -98,6 +101,7 @@ Commands:
   up                 Start watchdog service and enforce management policy routing
   down               Stop watchdog service and revert policy routing
   reboot [cmd]       Quickly toggle emergency reboot (on, off, enable, disable, status)
+  observe [cmd]      Observation (read-only) mode: on, off, status
   status             Display structured status of baseline, canaries, and routes
   run                Run in continuous background daemon / service mode
   check              Run one-shot connectivity check and auto-remediate if down
@@ -124,6 +128,7 @@ Flags:
   --update-url string   Override update server base URL (with 'update')
   --auto-update=bool    Select automatic updates (with 'init-config')
   --enable-reboot=bool  Select emergency reboot (with 'init-config')
+  --observation-mode=bool  Log incidents only, no recovery (with 'init-config')
   -v, --verbose         Enable verbose console logging (routed to stderr with --json)
   -h, --help            Show this help message
   -V, --version         Print version information
@@ -171,7 +176,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Invalid --enable-reboot:", err)
 			os.Exit(1)
 		}
-		cfg, err := config.Initialize(opts.confPath, autoUpdate, reboot)
+		observe, err := optionalBool(opts.installObserve)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Invalid --observation-mode:", err)
+			os.Exit(1)
+		}
+		cfg, err := config.Initialize(opts.confPath, autoUpdate, reboot, observe)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Configuration initialization failed:", err)
 			os.Exit(1)
@@ -180,7 +190,7 @@ func main() {
 		if path == "" {
 			path = config.DefaultConfigPath()
 		}
-		fmt.Printf("Configuration: %s\nAutomatic updates: %t\nEmergency reboot: %t\nChecks: %ds healthy / %ds during outage\nMinimum outage before reboot: %ds\n", path, cfg.AutoUpdate, cfg.EnableReboot, cfg.CheckIntervalSec, cfg.RecoveryIntervalSec, cfg.RebootMinOutageSec)
+		fmt.Printf("Configuration: %s\nObservation mode (no recovery actions): %t\nAutomatic updates: %t\nEmergency reboot: %t\nChecks: %ds healthy / %ds during outage\nMinimum outage before reboot: %ds\n", path, cfg.ObservationMode, cfg.AutoUpdate, cfg.EnableReboot, cfg.CheckIntervalSec, cfg.RecoveryIntervalSec, cfg.RebootMinOutageSec)
 		return
 	}
 
@@ -570,6 +580,43 @@ func main() {
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown reboot subcommand '%s'. Use 'on', 'off', or 'status'.\n", subCmd)
 			os.Exit(1)
+		}
+
+	case "observe", "observation":
+		sub := "status"
+		if len(opts.commands) > 1 {
+			sub = strings.ToLower(opts.commands[1])
+		}
+		targetConf := opts.confPath
+		if targetConf == "" {
+			targetConf = config.DefaultConfigPath()
+		}
+		enabled := cfg.ObservationMode
+		switch sub {
+		case "on", "enable", "1", "true":
+			enabled = true
+		case "off", "disable", "0", "false":
+			enabled = false
+		case "status":
+		default:
+			fmt.Fprintln(os.Stderr, "Usage: netriser observe [on|off|status]")
+			os.Exit(1)
+		}
+		if sub != "status" {
+			if err := config.SetObservationMode(targetConf, enabled); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to change observation mode: %v\n", err)
+				os.Exit(1)
+			}
+			if err := svcMgr.Restart(); err != nil {
+				fmt.Fprintf(os.Stderr, "Configuration saved, but the service restart failed: %v\n", err)
+			}
+		}
+		if enabled {
+			fmt.Printf("Observation mode: ON (%s). NetRiser logs incidents and changes no routes, services, DNS or updates.\n", targetConf)
+			fmt.Println("Enable recovery: netriser observe off")
+		} else {
+			fmt.Printf("Observation mode: OFF (%s). Recovery actions follow the allow_* settings.\n", targetConf)
+			fmt.Println("Log only: netriser observe on")
 		}
 
 	case "autoupdate":

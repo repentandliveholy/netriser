@@ -62,7 +62,7 @@ choose_setting() {
   while :; do
     printf '%s [%s]: ' "$label" "$hint" >/dev/tty
     if ! IFS= read -r reply </dev/tty; then
-      echo "Cannot read installation choice; set NETRISER_AUTO_UPDATE and NETRISER_ENABLE_REBOOT for unattended installation." >&2
+      echo "Cannot read installation choice; set NETRISER_OBSERVATION_MODE, NETRISER_AUTO_UPDATE and NETRISER_ENABLE_REBOOT for unattended installation." >&2
       return 1
     fi
     case "$reply" in
@@ -209,16 +209,21 @@ else
   run_root launchctl list com.netriser.daemon >/dev/null 2>&1 && NEW_WAS_ACTIVE=1 || true
 fi
 
+OBSERVE_DEFAULT=false
 AUTO_DEFAULT=true
 REBOOT_DEFAULT=false
 EFFECTIVE_CONFIG="${LEGACY_CONFIG_ARG:-$NEW_CONFIG}"
 if run_root test -f "$EFFECTIVE_CONFIG" || run_root test -f "$LEGACY_CONFIG" || run_root test -d "$LEGACY_STATE"; then
+  OBSERVE_DEFAULT=keep
   AUTO_DEFAULT=keep
   REBOOT_DEFAULT=keep
 fi
+echo 'Observation mode is read-only: NetRiser records incidents but does not change routes, services, DNS or updates.'
+echo 'Turn on recovery later with: nr observe off'
+OBSERVE_CHOICE="$(choose_setting 'Start in observation (read-only) mode' "${NETRISER_OBSERVATION_MODE:-}" "$OBSERVE_DEFAULT")"
 AUTO_CHOICE="$(choose_setting 'Enable automatic updates' "${NETRISER_AUTO_UPDATE:-}" "$AUTO_DEFAULT")"
 REBOOT_CHOICE="$(choose_setting 'Allow emergency host reboot (off by default; fresh installs wait at least 5 minutes)' "${NETRISER_ENABLE_REBOOT:-}" "$REBOOT_DEFAULT")"
-echo "Installation choices: automatic updates=$AUTO_CHOICE; emergency reboot=$REBOOT_CHOICE"
+echo "Installation choices: observation mode=$OBSERVE_CHOICE; automatic updates=$AUTO_CHOICE; emergency reboot=$REBOOT_CHOICE"
 
 # Create a durable backup before stopping services or changing any installed file.
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -266,6 +271,7 @@ else
 fi
 echo "[7/8] Creating or preserving configuration: $EFFECTIVE_CONFIG"
 set -- "$BIN" --config "$EFFECTIVE_CONFIG" init-config
+[ "$OBSERVE_CHOICE" = keep ] || set -- "$@" "--observation-mode=$OBSERVE_CHOICE"
 [ "$AUTO_CHOICE" = keep ] || set -- "$@" "--auto-update=$AUTO_CHOICE"
 [ "$REBOOT_CHOICE" = keep ] || set -- "$@" "--enable-reboot=$REBOOT_CHOICE"
 run_root "$@"
@@ -298,6 +304,6 @@ fi
 run_root "$BIN" version
 echo "NetRiser installed. Rollback backup: $BACKUP"
 echo "License: MIT; license texts installed in $DOC_DIR"
-echo "Commands: nr status; nr autoupdate on|off|status; nr reboot on|off|status"
+echo "Commands: nr status; nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status"
 echo "Logs: $(if [ "$OS" = linux ]; then echo 'journalctl -u netriser -f; /var/log/netriser.log'; else echo '/var/log/netriser.log'; fi)"
 SUCCESS=1

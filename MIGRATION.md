@@ -30,7 +30,8 @@ service registration only after the new service starts. If migration or service
 installation fails, the installer attempts to restore the previously running
 legacy service. Existing files are retained for recovery.
 
-Since 1.2.1, the installer asks about automatic updates and emergency reboot.
+Since 1.2.1, the installer asks about automatic updates and emergency reboot;
+since 1.2.2, it also asks whether to start in read-only observation mode.
 Enter keeps existing choices. Unattended upgrades preserve them unless the
 installer environment explicitly overrides them. Fresh installations create a
 complete config; `netriser init-config` can also repair a missing default config

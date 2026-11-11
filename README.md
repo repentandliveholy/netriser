@@ -35,8 +35,9 @@ Downloads, checksums, and release metadata are available from the
 history are published at [GitHub](https://github.com/repentandliveholy/netriser).
 
 The installer prints download, checksum, backup, configuration and service
-steps. It asks whether to enable automatic updates (default: yes) and emergency
-host reboot (default: no). Unix prompts read from the terminal, including with
+steps. It asks whether to start in read-only observation mode (default: no),
+enable automatic updates (default: yes) and allow emergency host reboot
+(default: no). Unix prompts read from the terminal, including with
 `curl | sh`. On a rerun, Enter preserves the existing choices and custom settings.
 A fresh installation always creates a complete configuration file.
 
@@ -44,12 +45,22 @@ For unattended Unix installation, set choices on the `sh` process:
 
 ```sh
 curl -fsSL https://netriser.repentandliveholy.org/install.sh | \
-  NETRISER_NONINTERACTIVE=1 NETRISER_AUTO_UPDATE=true NETRISER_ENABLE_REBOOT=false sh
+  NETRISER_NONINTERACTIVE=1 NETRISER_OBSERVATION_MODE=false \
+  NETRISER_AUTO_UPDATE=true NETRISER_ENABLE_REBOOT=false sh
 ```
 
-PowerShell uses the same `NETRISER_NONINTERACTIVE`, `NETRISER_AUTO_UPDATE` and
-`NETRISER_ENABLE_REBOOT` environment variables. Without a terminal, fresh installs
-use updates on and reboot off; existing settings are preserved unless overridden.
+PowerShell uses the same `NETRISER_NONINTERACTIVE`, `NETRISER_OBSERVATION_MODE`,
+`NETRISER_AUTO_UPDATE` and `NETRISER_ENABLE_REBOOT` environment variables.
+Without a terminal, fresh installs use observation off, updates on and reboot
+off; existing settings are preserved unless overridden.
+
+### Trying NetRiser on a production host
+
+Choose observation mode during installation. NetRiser then records incidents
+and the actions it would have taken, but changes no routes, services, DNS
+configuration or binaries. Review `/var/log/netriser.log` and the incident
+directory for a while, then enable recovery with `nr observe off`. Switch back
+at any time with `nr observe on`.
 
 ## Migration from Mesh Watchdog
 
@@ -84,16 +95,24 @@ Important settings:
 | `dns_canaries` | Hostnames used to check system DNS resolution. |
 | `allow_dns_recovery` | Permit restoration of a known healthy Linux resolver configuration. |
 | `management_interface`, `management_gateway` | Optional physical uplink overrides. |
-| `observation_mode` | Log incidents without applying recovery actions. |
+| `observation_mode` | Read-only mode: log incidents without recovery actions or updates. Toggle with `nr observe on\|off`. |
 | `allow_route_sanitation` | Permit targeted cleanup of suspicious routes. |
 | `allow_service_quarantine` | Permit stopping a mesh service when a matching rogue route is detected. |
+| `allowed_default_interfaces` | Overlay interfaces allowed to carry the default route, such as `tailscale0` on a host that uses a Tailscale exit node. |
 | `allow_network_restart` | Permit supported network-stack recovery. |
 | `enable_reboot` | Permit emergency host reboot. Defaults to `false`. |
 | `auto_update`, `update_url` | Control update checks and the distribution endpoint. |
 | `check_interval_sec`, `recovery_interval_sec` | Wait after a completed check: 60 seconds while healthy, 15 seconds during an IP outage. |
 | `reboot_min_outage_sec` | Require a measured continuous outage before an enabled reboot; defaults to 300 seconds. |
 
-Set only recovery actions appropriate for the host. Emergency reboot is
+Set only recovery actions appropriate for the host.
+
+If the host routes its own traffic through a VPN or mesh exit node, such as a
+Tailscale exit node, add that interface to `allowed_default_interfaces`.
+Otherwise NetRiser treats the overlay default route as a rogue route and, with
+`allow_service_quarantine` enabled, may stop the overlay service. Hosts that
+only advertise an exit node for other devices keep their default route on the
+physical uplink and need no change. Emergency reboot is
 disabled by default and should remain disabled unless unattended reboot is an
 explicit operational requirement.
 
@@ -120,6 +139,7 @@ nr status                    # same application, short command
 netriser check-config
 netriser init-config         # create defaults if missing; keep an existing config
 netriser run                 # foreground mode
+netriser observe on|off      # read-only observation mode or active recovery
 netriser service install     # install or update the system service
 netriser service stop
 netriser update --check

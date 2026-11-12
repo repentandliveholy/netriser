@@ -24,7 +24,9 @@ Setup and installers
   explanations and the final summary follow it.
 - Every question explains what it does and why, and shows what Enter selects
   and whether that is the recommended value or the current setting.
-  `да`/`нет` and `oui`/`non` are accepted as well as `y`/`n`.
+  Answers are `y`/`n` in every language, like command names.
+- Emergency reboot happens at most once per day by default
+  (`reboot_budget_window_sec: 86400`, previously one per hour).
 - Colored output in setup, the installers, `nr status`, `nr logs` and
   `nr live` on terminals (Windows 10+ consoles included); `NO_COLOR=1`
   disables it.

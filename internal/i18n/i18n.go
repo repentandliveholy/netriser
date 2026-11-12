@@ -76,19 +76,20 @@ func T(lang, key string, args ...any) string {
 	return text
 }
 
-// YesWords and NoWords are accepted in every language.
+// YesWords and NoWords are the answers in every language: y/n is kept in
+// English like command names.
 var (
-	YesWords = []string{"y", "yes", "д", "да", "o", "oui"}
-	NoWords  = []string{"n", "no", "н", "нет", "non"}
+	YesWords = []string{"y", "yes"}
+	NoWords  = []string{"n", "no"}
 )
 
 var catalog = map[string]msg{
 	// Prompt hints.
 	"yes":            {"yes", "да", "oui"},
 	"no":             {"no", "нет", "non"},
-	"yn_default_yes": {"Y/n", "Д/н", "O/n"},
-	"yn_default_no":  {"y/N", "д/Н", "o/N"},
-	"enter_is":       {"Enter = %s", "Enter = %s", "Entrée = %s"},
+	"yn_default_yes": {"Y/n", "Y/n", "Y/n"},
+	"yn_default_no":  {"y/N", "y/N", "y/N"},
+	"enter_is":       {"Enter = %s", "Enter = %s", "Enter = %s"},
 	"recommended":    {"recommended", "рекомендуется", "recommandé"},
 	"current":        {"current", "текущее", "actuel"},
 	"recommended_is": {"recommended: %s", "рекомендуется: %s", "recommandé : %s"},
@@ -97,15 +98,15 @@ var catalog = map[string]msg{
 	"list_hint":      {"comma separated", "через запятую", "séparés par des virgules"},
 	"list_keep":      {"keep: %s", "оставить: %s", "conserver : %s"},
 	"list_clear":     {"- = none", "- = пусто", "- = aucun"},
-	"yesno_retry":    {"Please answer y or n, or press Enter for the value shown after \"Enter =\".", "Ответьте д (да) или н (нет), либо нажмите Enter, чтобы выбрать значение после «Enter =».", "Répondez o (oui) ou n (non), ou appuyez sur Entrée pour la valeur indiquée après « Entrée = »."},
+	"yesno_retry":    {"Please answer y (yes) or n (no), or press Enter for the value shown after \"Enter =\".", "Ответьте y (yes, да) или n (no, нет), либо нажмите Enter, чтобы выбрать значение после «Enter =».", "Répondez y (yes, oui) ou n (no, non), ou appuyez sur Enter pour la valeur indiquée après « Enter = »."},
 	"integer_retry":  {"Please enter a whole number of at least %d.", "Введите целое число не меньше %d.", "Saisissez un nombre entier d'au moins %d."},
 	"cancelled":      {"Setup cancelled: nothing was changed.", "Настройка отменена: ничего не изменено.", "Configuration annulée : rien n'a été modifié."},
 
 	// Introduction.
 	"intro_saved":    {"NetRiser setup. Answers are saved to %s.", "Настройка NetRiser. Ответы будут сохранены в %s.", "Configuration de NetRiser. Les réponses sont enregistrées dans %s."},
-	"intro_existing": {"Defaults are your current settings: press Enter to keep each one.", "По умолчанию предлагаются ваши текущие настройки: нажмите Enter, чтобы оставить каждую из них.", "Les valeurs par défaut sont vos réglages actuels : appuyez sur Entrée pour les conserver."},
-	"intro_new":      {"Defaults are the recommended values: press Enter to accept each one.", "По умолчанию предлагаются рекомендуемые значения: нажмите Enter, чтобы принять каждое из них.", "Les valeurs par défaut sont celles recommandées : appuyez sur Entrée pour les accepter."},
-	"intro_howto":    {"How to answer: y = yes, n = no, Enter = the value shown after \"Enter =\". Ctrl+C cancels without changing anything.", "Как отвечать: д или y = да, н или n = нет, Enter = значение после «Enter =». Ctrl+C отменяет настройку без изменений.", "Comment répondre : o ou y = oui, n = non, Entrée = la valeur indiquée après « Entrée = ». Ctrl+C annule sans rien modifier."},
+	"intro_existing": {"Defaults are your current settings: press Enter to keep each one.", "По умолчанию предлагаются ваши текущие настройки: нажмите Enter, чтобы оставить каждую из них.", "Les valeurs par défaut sont vos réglages actuels : appuyez sur Enter pour les conserver."},
+	"intro_new":      {"Defaults are the recommended values: press Enter to accept each one.", "По умолчанию предлагаются рекомендуемые значения: нажмите Enter, чтобы принять каждое из них.", "Les valeurs par défaut sont celles recommandées : appuyez sur Enter pour les accepter."},
+	"intro_howto":    {"How to answer: y = yes, n = no, Enter = the value shown after \"Enter =\". Ctrl+C cancels without changing anything.", "Как отвечать: y (yes) = да, n (no) = нет, Enter = значение после «Enter =». Ctrl+C отменяет настройку без изменений.", "Comment répondre : y (yes) = oui, n (no) = non, Enter = la valeur indiquée après « Enter = ». Ctrl+C annule sans rien modifier."},
 	"intro_rerun":    {"Answer these questions again at any time with: netriser setup (short: nr setup)", "Ответить на эти вопросы заново можно в любой момент командой: netriser setup (коротко: nr setup)", "Vous pouvez répondre de nouveau à ces questions à tout moment avec : netriser setup (abrégé : nr setup)"},
 
 	// Operating mode.
@@ -134,17 +135,17 @@ var catalog = map[string]msg{
 	"ov_detected":         {"Detected on this host:", "Найдено на этой машине:", "Détecté sur cette machine :"},
 	"kind_mesh":           {"mesh network", "mesh-сеть", "réseau maillé"},
 	"kind_vpn":            {"VPN", "VPN", "VPN"},
-	"ft_explain":          {"Full tunnel means this machine deliberately sends ALL of its internet traffic through a VPN or an exit node (for example a commercial VPN for privacy). If the VPN or mesh network is only used to reach other machines, answer no: that is the usual case.", "Полный туннель — это когда машина намеренно отправляет ВЕСЬ свой интернет-трафик через VPN или выходной узел (например, коммерческий VPN ради приватности). Если VPN или mesh-сеть нужны только для доступа к другим машинам, ответьте «нет» — это обычный случай.", "Tunnel complet signifie que cette machine envoie volontairement TOUT son trafic Internet par un VPN ou un nœud de sortie (par exemple un VPN commercial pour la confidentialité). Si le VPN ou le réseau maillé sert seulement à joindre d'autres machines, répondez non : c'est le cas habituel."},
+	"ft_explain":          {"Full tunnel means this machine deliberately sends ALL of its internet traffic through a VPN or an exit node (for example a commercial VPN for privacy). If the VPN or mesh network is only used to reach other machines, answer no: that is the usual case.", "Полный туннель — это когда машина намеренно отправляет ВЕСЬ свой интернет-трафик через VPN или выходной узел (например, коммерческий VPN ради приватности). Если VPN или mesh-сеть нужны только для доступа к другим машинам, ответьте «no» — это обычный случай.", "Tunnel complet signifie que cette machine envoie volontairement TOUT son trafic Internet par un VPN ou un nœud de sortie (par exemple un VPN commercial pour la confidentialité). Si le VPN ou le réseau maillé sert seulement à joindre d'autres machines, répondez « no » : c'est le cas habituel."},
 	"ft_q":                {"Does this host route all of its traffic through a VPN or exit node", "Идёт ли весь трафик этой машины через VPN или выходной узел", "Tout le trafic de cette machine passe-t-il par un VPN ou un nœud de sortie"},
 	"ft_no_explain":       {"Only the physical connection may carry this machine's traffic. A VPN, exit node or tunnel that takes it over is removed immediately, even while the internet still works, and a VPN stopped for this is not turned back on.", "Трафик этой машины может идти только через основное (физическое) подключение. VPN, выходной узел или туннель, который перехватит трафик, сразу убирается — даже если интернет ещё работает, — а остановленный из-за этого VPN снова не запускается.", "Seule la connexion principale (physique) peut transporter le trafic de cette machine. Un VPN, un nœud de sortie ou un tunnel qui s'en empare est retiré immédiatement, même si Internet fonctionne encore, et un VPN arrêté pour cette raison n'est pas relancé."},
 	"ft_allowed_explain":  {"Which interfaces carry all traffic on purpose? The detected VPN interfaces are suggested.", "Какие интерфейсы намеренно пропускают весь трафик? Предлагаются найденные интерфейсы VPN.", "Quelles interfaces transportent volontairement tout le trafic ? Les interfaces VPN détectées sont proposées."},
 	"ft_allowed_q":        {"Interfaces allowed to carry the default route", "Интерфейсы, которым разрешён маршрут по умолчанию (весь трафик)", "Interfaces autorisées à porter la route par défaut"},
-	"bypass_explain":      {"If the VPN cuts this machine off (its server is unreachable, or its kill-switch blocks everything else), NetRiser can restore access by removing the VPN's routes or stopping it: traffic then goes outside the VPN until it works again. Answer yes if remote access matters most; answer no if this machine must never send traffic outside the VPN, even at the cost of losing access.", "Если VPN отрезает эту машину от сети (его сервер недоступен или kill-switch блокирует всё остальное), NetRiser может вернуть доступ: убрать маршруты VPN или остановить его. Тогда трафик пойдёт мимо VPN, пока тот снова не заработает. Ответьте «да», если важнее удалённый доступ; «нет» — если трафик ни при каких условиях не должен идти мимо VPN, даже ценой потери доступа.", "Si le VPN coupe cette machine du réseau (serveur injoignable, ou kill-switch qui bloque tout le reste), NetRiser peut rétablir l'accès en retirant les routes du VPN ou en l'arrêtant : le trafic passe alors hors du VPN jusqu'à ce qu'il fonctionne de nouveau. Répondez oui si l'accès à distance compte le plus ; non si cette machine ne doit jamais envoyer de trafic hors du VPN, même au prix de perdre l'accès."},
+	"bypass_explain":      {"If the VPN cuts this machine off (its server is unreachable, or its kill-switch blocks everything else), NetRiser can restore access by removing the VPN's routes or stopping it: traffic then goes outside the VPN until it works again. Answer yes if remote access matters most; answer no if this machine must never send traffic outside the VPN, even at the cost of losing access.", "Если VPN отрезает эту машину от сети (его сервер недоступен или kill-switch блокирует всё остальное), NetRiser может вернуть доступ: убрать маршруты VPN или остановить его. Тогда трафик пойдёт мимо VPN, пока тот снова не заработает. Ответьте «yes», если важнее удалённый доступ; «no» — если трафик ни при каких условиях не должен идти мимо VPN, даже ценой потери доступа.", "Si le VPN coupe cette machine du réseau (serveur injoignable, ou kill-switch qui bloque tout le reste), NetRiser peut rétablir l'accès en retirant les routes du VPN ou en l'arrêtant : le trafic passe alors hors du VPN jusqu'à ce qu'il fonctionne de nouveau. Répondez « yes » si l'accès à distance compte le plus ; « no » si cette machine ne doit jamais envoyer de trafic hors du VPN, même au prix de perdre l'accès."},
 	"bypass_q":            {"Is access to this host more important than keeping all traffic in the VPN", "Важнее ли доступ к этой машине, чем удержание всего трафика внутри VPN", "L'accès à cette machine est-il plus important que de garder tout le trafic dans le VPN"},
 	"custom_list":         {"Custom VPN/overlay definitions:", "Ваши описания VPN и оверлейных сетей:", "Vos définitions de VPN/overlay :"},
 	"custom_item":         {"  %s: interface %q, kind %s, services %s", "  %s: интерфейс %q, тип %s, службы %s", "  %s : interface %q, type %s, services %s"},
 	"custom_keep_q":       {"Keep these definitions", "Оставить эти описания", "Conserver ces définitions"},
-	"custom_explain":      {"If you use a VPN that NetRiser did not list above, you can describe it so NetRiser recognises its interface. Most users answer no.", "Если вы используете VPN, которого нет в списке выше, его можно описать, чтобы NetRiser узнавал его интерфейс. Обычно отвечают «нет».", "Si vous utilisez un VPN absent de la liste ci-dessus, vous pouvez le décrire pour que NetRiser reconnaisse son interface. La plupart des utilisateurs répondent non."},
+	"custom_explain":      {"If you use a VPN that NetRiser did not list above, you can describe it so NetRiser recognises its interface. Most users answer no.", "Если вы используете VPN, которого нет в списке выше, его можно описать, чтобы NetRiser узнавал его интерфейс. Обычно отвечают «no».", "Si vous utilisez un VPN absent de la liste ci-dessus, vous pouvez le décrire pour que NetRiser reconnaisse son interface. La plupart des utilisateurs répondent « no »."},
 	"custom_add_q":        {"Do you use a VPN or overlay that NetRiser does not recognise", "Используете ли вы VPN или оверлейную сеть, которую NetRiser не распознаёт", "Utilisez-vous un VPN ou un overlay que NetRiser ne reconnaît pas"},
 	"custom_more_q":       {"Add another one", "Добавить ещё одно", "En ajouter un autre"},
 	"custom_name_q":       {"Name", "Название", "Nom"},
@@ -170,7 +171,9 @@ var catalog = map[string]msg{
 	"uplink_detected":      {"Detected physical uplink: %s", "Найдено основное (физическое) подключение: %s", "Connexion principale (physique) détectée : %s"},
 	"uplink_gateway":       {"%s (gateway %s)", "%s (шлюз %s)", "%s (passerelle %s)"},
 	"uplink_q":             {"Uplink interface (auto = detect automatically)", "Интерфейс основного подключения (auto = определять автоматически)", "Interface de la connexion principale (auto = détection automatique)"},
-	"reboot_explain":       {"Emergency reboot is the last resort: if nothing else brings the connection back, the machine restarts. It happens only after a long continuous outage and at most a few times a day. Answer yes only if nobody can reach the machine physically.", "Аварийная перезагрузка — последнее средство: если ничто другое не вернуло связь, машина перезагружается. Это происходит только после долгого непрерывного сбоя и не чаще нескольких раз в сутки. Отвечайте «да», только если никто не может физически подойти к машине.", "Le redémarrage d'urgence est le dernier recours : si rien d'autre ne rétablit la connexion, la machine redémarre. Cela n'arrive qu'après une longue coupure continue et quelques fois par jour au plus. Répondez oui seulement si personne ne peut accéder physiquement à la machine."},
+	"reboot_explain":       {"Emergency reboot is the last resort: if nothing else brings the connection back, the machine restarts. It happens only after a long continuous outage.", "Аварийная перезагрузка — последнее средство: если ничто другое не вернуло связь, машина перезагружается. Это происходит только после долгого непрерывного сбоя.", "Le redémarrage d'urgence est le dernier recours : si rien d'autre ne rétablit la connexion, la machine redémarre. Cela n'arrive qu'après une longue coupure continue."},
+	"reboot_once":          {"At most one reboot per day.", "Не больше одной перезагрузки в сутки.", "Au plus un redémarrage par jour."},
+	"reboot_advice":        {"Answer yes only if nobody can reach the machine physically.", "Отвечайте «yes», только если никто не может физически подойти к машине.", "Répondez « yes » seulement si personne ne peut accéder physiquement à la machine."},
 	"reboot_q":             {"Allow emergency host reboot", "Разрешить аварийную перезагрузку машины", "Autoriser le redémarrage d'urgence de la machine"},
 	"reboot_min_q":         {"Minimum continuous outage before reboot, seconds", "Минимальная длительность непрерывного сбоя перед перезагрузкой, секунд", "Durée minimale de coupure continue avant redémarrage, en secondes"},
 

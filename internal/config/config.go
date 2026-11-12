@@ -175,9 +175,9 @@ func DefaultConfig() *Config {
 		EnableReboot:              false, // Safe default: disabled by default
 		RebootMinOutageSec:        300,
 		RebootGraceSec:            15,
-		RebootBudgetCount:         1,    // Max 1 reboot per window
-		RebootBudgetWindowSec:     3600, // 1 hour window
-		StartupGraceSec:           60,   // Wait 60s after startup before allowing reboot
+		RebootBudgetCount:         1,     // Max 1 reboot per window
+		RebootBudgetWindowSec:     86400, // at most one reboot per day
+		StartupGraceSec:           60,    // Wait 60s after startup before allowing reboot
 		EnableSysRqFallback:       false,
 		UpdateURL:                 "https://netriser.repentandliveholy.org",
 		AutoUpdate:                true,

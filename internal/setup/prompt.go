@@ -91,11 +91,12 @@ func (p *prompter) enter(value string, isRecommended bool, recommended string) s
 	return s
 }
 
+// word is the answer shown in hints; y/n answers are English everywhere.
 func (p *prompter) word(v bool) string {
 	if v {
-		return p.t("yes")
+		return "yes"
 	}
-	return p.t("no")
+	return "no"
 }
 
 // yesNo asks a yes/no question; rec is the recommended answer, if any.

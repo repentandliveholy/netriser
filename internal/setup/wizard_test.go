@@ -204,7 +204,7 @@ func TestSetupAsksLanguageFirstAndUsesIt(t *testing.T) {
 	}
 	text := out.String()
 	if cfg.Language != "ru" || !strings.HasPrefix(text, "Language / Язык / Langue") ||
-		!strings.Contains(text, "Начать в режиме наблюдения") || !strings.Contains(text, "Enter = да (рекомендуется)") ||
+		!strings.Contains(text, "Начать в режиме наблюдения") || !strings.Contains(text, "Enter = yes (рекомендуется)") ||
 		strings.Contains(text, "Start in observation") {
 		t.Fatalf("language not applied (language=%q):\n%s", cfg.Language, text)
 	}
@@ -222,14 +222,14 @@ func TestSetupAsksLanguageFirstAndUsesIt(t *testing.T) {
 
 func TestPromptHints(t *testing.T) {
 	out := &bytes.Buffer{}
-	p := &prompter{r: bufio.NewReader(strings.NewReader("\n\n\n\nmaybe\nда\n")), w: out, lang: "en"}
+	p := &prompter{r: bufio.NewReader(strings.NewReader("\n\n\n\nда\nyes\n")), w: out, lang: "en"}
 	p.yesNo("Q1", true, ptr(true))
 	p.existing = true
 	p.yesNo("Q2", false, ptr(true))
 	p.text("Q3", "auto", "auto", false)
 	p.list("Q4", nil, true)
 	if v, _ := p.yesNo("Q5", false, nil); !v {
-		t.Fatal("Russian yes not accepted")
+		t.Fatal("yes not accepted")
 	}
 	text := out.String()
 	for _, want := range []string{
@@ -237,7 +237,7 @@ func TestPromptHints(t *testing.T) {
 		"Q2 [y/N · Enter = no (current) · recommended: yes]: ",
 		"Q3 [Enter = auto (recommended)]: ",
 		"Q4 [comma separated · Enter = none (recommended)]: ",
-		"Please answer y or n",
+		"Please answer y (yes) or n (no)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in:\n%s", want, text)
@@ -253,7 +253,7 @@ func TestColoredPromptKeepsQuestionTerminator(t *testing.T) {
 	p := &prompter{r: bufio.NewReader(strings.NewReader("\n")), w: out, lang: "fr", s: term.Style{On: true}}
 	p.yesNo("Activer", true, ptr(true))
 	text := out.String()
-	if !strings.Contains(text, "\x1b[") || !strings.Contains(text, "]: ") || !strings.Contains(text, "Entrée = oui (recommandé)") {
+	if !strings.Contains(text, "\x1b[") || !strings.Contains(text, "]: ") || !strings.Contains(text, "Enter = yes (recommandé)") {
 		t.Fatalf("unexpected colored prompt: %q", text)
 	}
 }

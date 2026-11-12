@@ -116,8 +116,8 @@ allow_network_restart: true
 enable_reboot: false
 reboot_min_outage_sec: 300       # Measured continuous outage; independent of failure count.
 reboot_grace_sec: 15
-reboot_budget_count: 1
-reboot_budget_window_sec: 3600
+reboot_budget_count: 1           # At most this many reboots...
+reboot_budget_window_sec: 86400  # ...per this many seconds (one per day).
 startup_grace_sec: 60
 enable_sysrq_fallback: false     # Linux only: use /proc/sysrq-trigger as a last resort.
 

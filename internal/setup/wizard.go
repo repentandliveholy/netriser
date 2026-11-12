@@ -3,7 +3,6 @@
 package setup
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,9 +12,11 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -23,7 +24,6 @@ import (
 	"github.com/repentandliveholy/netriser/internal/config"
 	"github.com/repentandliveholy/netriser/internal/i18n"
 	"github.com/repentandliveholy/netriser/internal/netengine"
-	"github.com/repentandliveholy/netriser/internal/term"
 )
 
 // Detected is a VPN or overlay interface present on this host.
@@ -105,7 +105,7 @@ func Run(ctx context.Context, opts Options) (map[string]any, error) {
 	if opts.Uplink == nil {
 		opts.Uplink = detectUplink
 	}
-	w := &wizard{p: &prompter{r: bufio.NewReader(opts.In), w: opts.Out, lang: "en", s: term.For(opts.Out), existing: existing}, opts: opts, cur: current, values: values, existing: existing}
+	w := &wizard{p: newPrompter(opts.In, opts.Out, existing), opts: opts, cur: current, values: values, existing: existing}
 	if err := w.run(ctx, existing); err != nil {
 		return nil, err
 	}
@@ -138,8 +138,13 @@ func (w *wizard) yesNo(key, question string, def bool, rec *bool) (bool, error) 
 
 func ptr(b bool) *bool { return &b }
 
+// sectionCount is the number of numbered sections, the summary included.
+const sectionCount = 6
+
 func (w *wizard) section(key string) {
-	w.p.printf("\n%s\n", w.p.s.Title("== "+w.p.t(key)+" =="))
+	w.p.sec++
+	w.p.q = 0
+	w.p.printf("\n%s\n", w.p.s.Title("== "+w.p.t("section", w.p.sec, sectionCount, w.p.t(key))+" =="))
 	w.p.grouped = true
 }
 
@@ -490,28 +495,75 @@ func (w *wizard) recovery(ctx context.Context) error {
 
 func (w *wizard) updates() error {
 	w.section("sec_updates")
-	w.p.explain(w.p.t("upd_explain", w.cur.UpdateURL))
+	if config.IsLegacyUpdateURL(w.cur.UpdateURL) {
+		w.values["update_url"] = config.DefaultUpdateURL
+	}
+	w.p.explain(w.p.t("upd_explain", w.cur.EffectiveUpdateURL()))
 	_, err := w.yesNo("auto_update", w.p.t("upd_q"), w.cur.AutoUpdate, ptr(true))
 	return err
+}
+
+// summaryOrder lists settings in question order for the summary.
+var summaryOrder = []string{
+	"language", "observation_mode", "canary_targets", "mesh_canaries", "full_tunnel",
+	"allowed_default_interfaces", "allow_vpn_bypass", "overlays", "allow_route_sanitation",
+	"allow_service_quarantine", "allow_network_restart", "allow_dns_recovery",
+	"management_interface", "enable_reboot", "reboot_min_outage_sec", "auto_update", "update_url",
 }
 
 func (w *wizard) confirm() error {
 	p := w.p
 	before, _ := w.cur.Values()
 	keys := make([]string, 0, len(w.values))
-	for k := range w.values {
-		keys = append(keys, k)
+	for _, k := range summaryOrder {
+		if _, ok := w.values[k]; ok {
+			keys = append(keys, k)
+		}
 	}
-	sort.Strings(keys)
+	var rest []string
+	for k := range w.values {
+		if !slices.Contains(summaryOrder, k) {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+
 	w.section("sec_summary")
+	p.explain(p.t("sum_explain"))
+	width, valueWidth := 0, 0
+	labels := map[string]string{}
+	for _, k := range keys {
+		labels[k] = p.t("lbl_" + k)
+		if strings.HasPrefix(labels[k], "lbl_") {
+			labels[k] = k
+		}
+		width = max(width, utf8.RuneCountInString(labels[k]))
+		valueWidth = max(valueWidth, utf8.RuneCountInString(w.show(k, canon(w.values[k]))))
+	}
+	valueWidth = min(valueWidth, 40)
 	changes := 0
 	for _, k := range keys {
 		old, now := canon(before[k]), canon(w.values[k])
-		if reflect.DeepEqual(old, now) {
-			continue
+		pad := strings.Repeat(" ", width-utf8.RuneCountInString(labels[k]))
+		value := w.show(k, now)
+		valuePad := strings.Repeat(" ", max(0, valueWidth-utf8.RuneCountInString(value)))
+		var status string
+		switch {
+		case reflect.DeepEqual(old, now) && w.existing:
+			status = p.s.Dim(p.t("sum_unchanged"))
+		case reflect.DeepEqual(old, now):
+			status = p.s.Dim(p.t("sum_default"))
+		case w.existing:
+			changes++
+			value = p.s.Green(value)
+			status = p.s.Yellow(p.t("sum_was", w.show(k, old)))
+		default:
+			changes++
+			value = p.s.Green(value)
+			status = p.s.Yellow(p.t("sum_default_was", w.show(k, old)))
 		}
-		changes++
-		p.printf("  %-28s %s -> %s\n", k, p.s.Dim(display(old)), p.s.Green(display(now)))
+		p.printf("%s%s%s  %s%s  %s\n", indent, labels[k], pad, value, valuePad, status)
 	}
 	switch {
 	case !w.existing && changes > 0:
@@ -530,6 +582,41 @@ func (w *wizard) confirm() error {
 		return ErrCancelled
 	}
 	return nil
+}
+
+// show formats a setting value for the summary.
+func (w *wizard) show(key string, v any) string {
+	switch key {
+	case "language":
+		if name, ok := i18n.Names[fmt.Sprint(v)]; ok {
+			return name
+		}
+		return i18n.Names["en"]
+	case "management_interface":
+		if v == nil || v == "" {
+			return w.p.t("val_auto")
+		}
+	}
+	switch x := v.(type) {
+	case nil:
+		return w.p.t("none")
+	case bool:
+		return word(x)
+	case []any:
+		if len(x) == 0 {
+			return w.p.t("none")
+		}
+		var parts []string
+		for _, item := range x {
+			if m, ok := item.(map[string]any); ok && m["name"] != nil {
+				parts = append(parts, fmt.Sprint(m["name"]))
+			} else {
+				parts = append(parts, fmt.Sprint(item))
+			}
+		}
+		return strings.Join(parts, ", ")
+	}
+	return fmt.Sprint(v)
 }
 
 // canon converts a value to its YAML-decoded form for comparison.

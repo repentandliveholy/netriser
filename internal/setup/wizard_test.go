@@ -182,7 +182,7 @@ func TestSetupWithoutFullTunnelSkipsBypassQuestion(t *testing.T) {
 	if !cfg.UplinkOnly() || len(cfg.AllowedDefaultInterfaces) != 0 {
 		t.Fatalf("no-full-tunnel answer not applied: %+v", cfg)
 	}
-	text := out.String()
+	text := flat(out.String())
 	if strings.Contains(text, "more important than keeping all traffic") || !strings.Contains(text, "removed immediately, even while") {
 		t.Fatalf("wrong questions for a host without a full tunnel:\n%s", text)
 	}
@@ -202,8 +202,8 @@ func TestSetupAsksLanguageFirstAndUsesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := out.String()
-	if cfg.Language != "ru" || !strings.HasPrefix(text, "Language / Язык / Langue") ||
+	text := flat(out.String())
+	if cfg.Language != "ru" || !strings.HasPrefix(text, "? Language / Язык / Langue") ||
 		!strings.Contains(text, "Начать в режиме наблюдения") || !strings.Contains(text, "Enter = yes (рекомендуется)") ||
 		strings.Contains(text, "Start in observation") {
 		t.Fatalf("language not applied (language=%q):\n%s", cfg.Language, text)
@@ -233,10 +233,10 @@ func TestPromptHints(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"Q1 [Y/n · Enter = yes (recommended)]: ",
-		"Q2 [y/N · Enter = no (current) · recommended: yes]: ",
-		"Q3 [Enter = auto (recommended)]: ",
-		"Q4 [comma separated · Enter = none (recommended)]: ",
+		"Q1\n      [Y/n · Enter = yes (recommended)]: ",
+		"Q2\n      [y/N · Enter = no (current) · recommended: yes]: ",
+		"Q3\n      [Enter = auto (recommended)]: ",
+		"Q4\n      [comma separated · Enter = none (recommended)]: ",
 		"Please answer y (yes) or n (no)",
 	} {
 		if !strings.Contains(text, want) {
@@ -267,5 +267,44 @@ func TestWrapKeepsWordsAndWidth(t *testing.T) {
 	}
 	if strings.Join(lines, " ") != "Полный туннель — это когда машина намеренно отправляет весь свой интернет-трафик через VPN." {
 		t.Fatalf("words changed: %q", lines)
+	}
+}
+
+// flat collapses line breaks and indentation, so checks do not depend on
+// where help text wraps.
+func flat(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// The summary lists every answer: unchanged ones are marked, changed ones show
+// the previous value. A configuration still pointing at the retired Mesh
+// Watchdog host is moved to the NetRiser update server.
+func TestSummaryListsEveryAnswerAndReplacesRetiredUpdateHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(path, []byte("update_url: https://mesh-watchdog.repentandliveholy.org\nauto_update: true\nobservation_mode: false\n"), 0600)
+	// Observation mode: answer y (changed); everything else: Enter.
+	opts, out := stubOpts(path, "y\n"+strings.Repeat("\n", 40), true)
+	values, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	text := flat(out.String())
+	for _, want := range []string{
+		"== 6/6 · Summary ==",
+		"Observation mode yes was: no",
+		"Automatic updates yes not changed",
+		"Stage 1: routes yes not changed",
+		"Update server https://netriser.repentandliveholy.org was: https://mesh-watchdog.repentandliveholy.org",
+		"1.1 Start in observation",
+		"Updates come from https://netriser.repentandliveholy.org.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("summary lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(text, "Updates come from https://mesh-watchdog") {
+		t.Error("retired update host shown")
+	}
+	cfg, _, err := config.Apply(path, values)
+	if err != nil || cfg.UpdateURL != config.DefaultUpdateURL {
+		t.Fatalf("retired update host kept: %q %v", cfg.UpdateURL, err)
 	}
 }

@@ -38,3 +38,6 @@ func (s Style) Green(t string) string  { return s.wrap("32", t) }
 func (s Style) Yellow(t string) string { return s.wrap("33", t) }
 func (s Style) Cyan(t string) string   { return s.wrap("36", t) }
 func (s Style) Title(t string) string  { return s.wrap("1;36", t) }
+
+// Reverse highlights the selected menu option with a background.
+func (s Style) Reverse(t string) string { return s.wrap("7", t) }

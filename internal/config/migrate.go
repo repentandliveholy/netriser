@@ -69,8 +69,8 @@ func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i], root.Content[i+1]
 		present[key.Value] = true
-		if key.Value == "update_url" && value.Value == "https://mesh-watchdog.repentandliveholy.org" {
-			value.Value = "https://netriser.repentandliveholy.org"
+		if key.Value == "update_url" && IsLegacyUpdateURL(value.Value) {
+			value.Value = DefaultUpdateURL
 		}
 	}
 	for _, key := range []string{"state_dir", "log_file", "incident_dir", "lock_file", "update_url"} {

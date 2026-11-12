@@ -179,7 +179,7 @@ func DefaultConfig() *Config {
 		RebootBudgetWindowSec:     3600, // anti-flapping cap; one reboot per outage applies too
 		StartupGraceSec:           60,   // Wait 60s after startup before allowing reboot
 		EnableSysRqFallback:       false,
-		UpdateURL:                 "https://netriser.repentandliveholy.org",
+		UpdateURL:                 DefaultUpdateURL,
 		AutoUpdate:                true,
 		AutoUpdateIntervalSec:     21600,
 		UpdatePublicKeys:          []string{},
@@ -457,6 +457,27 @@ func sanitizeYAML(data []byte) []byte {
 		out = append(out, b)
 	}
 	return out
+}
+
+// DefaultUpdateURL is the release server; LegacyUpdateURL is the retired
+// Mesh Watchdog host, which is never used.
+const (
+	DefaultUpdateURL = "https://netriser.repentandliveholy.org"
+	LegacyUpdateURL  = "https://mesh-watchdog.repentandliveholy.org"
+)
+
+// IsLegacyUpdateURL reports whether u points at the retired Mesh Watchdog host.
+func IsLegacyUpdateURL(u string) bool {
+	u = strings.TrimRight(strings.ToLower(strings.TrimSpace(u)), "/")
+	return u == LegacyUpdateURL || u == strings.Replace(LegacyUpdateURL, "https://", "http://", 1)
+}
+
+// EffectiveUpdateURL is update_url with the retired host replaced.
+func (c *Config) EffectiveUpdateURL() string {
+	if IsLegacyUpdateURL(c.UpdateURL) {
+		return DefaultUpdateURL
+	}
+	return c.UpdateURL
 }
 
 // UplinkOnly reports whether this host was declared to have no full tunnel,

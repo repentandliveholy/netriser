@@ -690,7 +690,7 @@ func main() {
 			}
 		}
 		if opts.jsonOutput {
-			data, _ := json.Marshal(map[string]any{"auto_update": enabled, "interval_sec": cfg.AutoUpdateIntervalSec, "update_url": cfg.UpdateURL})
+			data, _ := json.Marshal(map[string]any{"auto_update": enabled, "interval_sec": cfg.AutoUpdateIntervalSec, "update_url": cfg.EffectiveUpdateURL()})
 			fmt.Println(string(data))
 		} else {
 			fmt.Printf("Automatic updates: %t (interval: %ds). Running daemon reloads this setting within 30 seconds.\n", enabled, cfg.AutoUpdateIntervalSec)
@@ -709,7 +709,7 @@ func main() {
 			}
 			defer lock.Unlock()
 		}
-		baseURL := cfg.UpdateURL
+		baseURL := cfg.EffectiveUpdateURL()
 		if opts.updateURL != "" {
 			baseURL = opts.updateURL
 		}

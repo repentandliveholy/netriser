@@ -221,7 +221,9 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
                     end = output.find("]: ", answered_upto)
                     if end < 0:
                         break
-                    prompt = output[answered_upto:end].splitlines()[-1]
+                    # The question is printed above the answer line (and the
+                    # options line of an arrow-key menu).
+                    prompt = "\n".join(output[answered_upto:end].splitlines()[-3:])
                     reply = next((r for fragment, r in answers.items() if fragment in prompt), "")
                     if isinstance(reply, list):  # one reply per time this prompt is shown
                         reply = reply.pop(0) if reply else ""

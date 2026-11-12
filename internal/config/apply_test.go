@@ -118,3 +118,15 @@ func TestApplyRejectsInvalidValuesWithoutWriting(t *testing.T) {
 		t.Fatalf("invalid values written: %s", data)
 	}
 }
+
+func TestRetiredUpdateHostIsNeverUsed(t *testing.T) {
+	for _, u := range []string{"https://mesh-watchdog.repentandliveholy.org", "https://mesh-watchdog.repentandliveholy.org/", "http://MESH-WATCHDOG.repentandliveholy.org"} {
+		c := &Config{UpdateURL: u}
+		if c.EffectiveUpdateURL() != DefaultUpdateURL {
+			t.Errorf("%s not replaced", u)
+		}
+	}
+	if (&Config{UpdateURL: "https://updates.example.org"}).EffectiveUpdateURL() != "https://updates.example.org" {
+		t.Error("custom update server replaced")
+	}
+}

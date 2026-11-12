@@ -40,6 +40,7 @@ type CheckReport struct {
 	CanaryResult     canary.HealthResult      `json:"canary_result"`
 	PostCanaryResult *canary.HealthResult     `json:"post_canary_result,omitempty"`
 	Remediated       bool                     `json:"remediated"`
+	AccessLost       bool                     `json:"access_lost,omitempty"`
 	RemediationStage int                      `json:"remediation_stage"`
 	StageReason      string                   `json:"stage_reason,omitempty"`
 	ActionsTaken     []netengine.ActionResult `json:"actions_taken,omitempty"`
@@ -339,6 +340,11 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 				state = fresh
 			}
 		}
+		if w.checkAccess(ctx, canaryResult, baseline, bErr, report) {
+			if fresh, _ := w.stateMgr.LoadState(); fresh != nil {
+				state = fresh
+			}
+		}
 		if len(state.QuarantinedServices) > 0 && !w.cfg.ObservationMode {
 			var remaining []ServiceQuarantineRecord
 			broken := false
@@ -378,16 +384,22 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 					report.CanaryResult, report.Healthy = postRestoreCheck, false
 					return w.recoverDNS(ctx, report)
 				}
-				if postRestoreCheck.Healthy {
+				if postRestoreCheck.Healthy && !postRestoreCheck.AccessLost() {
 					w.logger.Info("Service %s successfully restored and network remains healthy!", rec.Name)
 				} else {
-					w.logger.Warn("Restoring %s triggered network disruption! Re-quarantining with exponential backoff.", rec.Name)
+					if postRestoreCheck.AccessLost() {
+						w.logger.Warn("Restoring %s cut remote access (no access address answers)! Re-quarantining with exponential backoff.", rec.Name)
+					} else {
+						w.logger.Warn("Restoring %s triggered network disruption! Re-quarantining with exponential backoff.", rec.Name)
+					}
+					w.cfg.SetVPNBypassActive(true)
 					if w.cfg.AllowServiceQuarantine {
 						_, _ = w.engine.QuarantineMeshServices(ctx)
 					}
 					if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
 						_, _ = w.engine.SurgicalCleanRoutes(ctx, baseline)
 					}
+					w.cfg.SetVPNBypassActive(false)
 					if limit := w.cfg.MaxRestoreAttempts; limit > 0 && rec.Attempts >= limit {
 						rec.GaveUp = true
 						w.logger.Warn("Gave up restoring %s after %d attempts: each restart cut connectivity. It stays stopped; start it yourself once its server is reachable.", rec.Name, rec.Attempts)
@@ -507,6 +519,11 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 	}
 
 	w.logger.Recovery("[Stage %d] %s", decision.Stage, decision.Reason)
+
+	// On a full-tunnel host where access comes first, a VPN on
+	// allowed_default_interfaces may be bypassed while recovering.
+	w.cfg.SetVPNBypassActive(true)
+	defer w.cfg.SetVPNBypassActive(false)
 
 	switch decision.Stage {
 	case 4:
@@ -722,6 +739,81 @@ func (w *Watchdog) enforceUplinkOnly(ctx context.Context, baseline netengine.Bas
 	return true
 }
 
+// accessLossChecks is how many consecutive checks must find access lost
+// before recovery acts, so that one missed answer is not acted on.
+const accessLossChecks = 2
+
+// checkAccess handles the access addresses (mesh_canaries) while the
+// internet works. When none answers in accessLossChecks consecutive checks,
+// a full-tunnel VPN is bypassed on hosts where access comes first; otherwise
+// the loss is only logged. It reports whether the state was changed.
+func (w *Watchdog) checkAccess(ctx context.Context, res canary.HealthResult, baseline netengine.Baseline, bErr error, report *CheckReport) bool {
+	state, _ := w.stateMgr.LoadState()
+	if state == nil {
+		return false
+	}
+	if !res.AccessLost() {
+		if state.AccessFailCount == 0 && !state.AccessActed {
+			return false
+		}
+		if res.AccessChecked {
+			w.logger.Info("Remote access restored: an access address answers again.")
+		}
+		state.AccessFailCount, state.AccessActed = 0, false
+		_ = w.stateMgr.SaveState(state)
+		return true
+	}
+	report.AccessLost = true
+	state.AccessFailCount++
+	if state.AccessFailCount == 1 {
+		w.logger.Warn("Remote access check FAILED: the internet works, but none of the access addresses (%s) answers.", strings.Join(w.cfg.MeshCanaries, ", "))
+	}
+	act := state.AccessFailCount >= accessLossChecks && !state.AccessActed
+	if act {
+		state.AccessActed = true
+	}
+	if err := w.stateMgr.SaveState(state); err != nil || !act {
+		return true
+	}
+
+	switch {
+	case w.cfg.ObservationMode:
+		w.logger.Warn("[Observation] Remote access is lost while the internet works; NetRiser would look for a VPN cutting the host off.")
+	case !w.cfg.AccessFirst():
+		reason := "no full-tunnel VPN may be bypassed on this host"
+		if w.cfg.FullTunnel != nil && *w.cfg.FullTunnel {
+			reason = "privacy comes first on this host, so the VPN is not bypassed"
+		}
+		w.logger.Warn("Remote access is lost while the internet works; %s. Recording only.", reason)
+	case !w.cfg.AllowRouteSanitation || bErr != nil || !baseline.IsValid():
+		w.logger.Warn("Remote access is lost while the internet works; route recovery is not possible now. Recording only.")
+	default:
+		det, ok := w.engine.(netengine.RogueRouteDetector)
+		if !ok {
+			return true
+		}
+		w.cfg.SetVPNBypassActive(true)
+		defer w.cfg.SetVPNBypassActive(false)
+		rogue, err := det.RogueDefaultRoutes(ctx)
+		if err != nil || len(rogue) == 0 {
+			w.logger.Warn("Remote access is lost while the internet works, but no VPN holds the default route. Recording only.")
+			return true
+		}
+		w.logger.Recovery("Remote access is lost while %s holds the default route; access comes first on this host, so the VPN is bypassed.", strings.Join(rogue, ", "))
+		actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
+		if cleanErr != nil {
+			actions = append(actions, netengine.ActionResult{Type: netengine.ActionCleanRoute, Target: "routes", Status: netengine.ActionFailed, Error: cleanErr.Error()})
+		}
+		for _, a := range actions {
+			w.logger.Recovery("  - %s", a.String())
+		}
+		report.ActionsTaken = append(report.ActionsTaken, actions...)
+		report.Remediated = true
+		w.recordQuarantine(actions)
+	}
+	return true
+}
+
 // recordQuarantine stores overlays stopped by remediation in the state.
 func (w *Watchdog) recordQuarantine(actions []netengine.ActionResult) {
 	var stopped []string
@@ -804,6 +896,8 @@ type StatusReport struct {
 	RebootBudget24h       int                       `json:"reboot_budget_24h"`
 	RecentReboots24h      int                       `json:"recent_reboots_24h"`
 	RecoveryPaused        bool                      `json:"recovery_paused,omitempty"`
+	AccessChecked         bool                      `json:"access_checked,omitempty"`
+	AccessOK              bool                      `json:"access_ok,omitempty"`
 	ObservationMode       bool                      `json:"observation_mode"`
 	ConsecutiveFailures   int                       `json:"consecutive_failures"`
 	QuarantinedServices   []ServiceQuarantineRecord `json:"quarantined_services"`
@@ -869,6 +963,8 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		ObservationMode:       w.cfg.ObservationMode,
 		ConsecutiveFailures:   fails,
 		RecoveryPaused:        state != nil && state.RecoveryPaused,
+		AccessChecked:         canaryRes.AccessChecked,
+		AccessOK:              canaryRes.MeshHealthy,
 		QuarantinedServices:   quarantined,
 		CanaryResults:         canaryRes,
 		Errors:                errs,
@@ -910,6 +1006,13 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	buf.WriteString(fmt.Sprintf("Emergency Reboot:     %t\n", rep.EnableReboot))
 	buf.WriteString(fmt.Sprintf("Reboot Budget (24h):  %d used / %d allowed\n", rep.RecentReboots24h, rep.RebootBudget24h))
 	buf.WriteString(fmt.Sprintf("Consecutive Failures: %d\n", rep.ConsecutiveFailures))
+	if rep.AccessChecked {
+		if rep.AccessOK {
+			buf.WriteString("Remote Access:        ok (an access address answers)\n")
+		} else {
+			buf.WriteString("Remote Access:        LOST (no access address answers)\n")
+		}
+	}
 	if rep.RecoveryPaused {
 		buf.WriteString("Recovery Paused:      yes (no connectivity after the emergency reboot; only checking)\n")
 	}

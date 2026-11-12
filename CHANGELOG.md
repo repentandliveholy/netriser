@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.3.3 (not released yet)
+
+Access check
+- `mesh_canaries` became a real access check: always-on hosts in the network
+  you use to reach this machine (tailnet, WireGuard network). The internet
+  probes show whether the machine reaches the internet; these show whether
+  the path to the machine works.
+- If none of them answers in two consecutive checks while the internet works,
+  a host with a full tunnel where access comes first stops the VPN that
+  carries all traffic (restored at most `max_restore_attempts` times, and a
+  restore that cuts access again counts as failed). Other hosts log it.
+  `nr status` shows "Remote Access: ok / LOST".
+- On such hosts a VPN listed in `allowed_default_interfaces` can now be
+  bypassed during recovery, as the "access first" answer promises; before,
+  the list protected it even when it cut the host off.
+- An address without a port is checked with ping, `host:port` by connecting;
+  a refused connection counts as an answer. Previously a port-less address
+  was probed on port 53, and fast checks cancelled these probes as soon as
+  the internet answered, so they often reported a false failure.
+
+Setup
+- Numbered sections and questions; yes/no and the language are chosen in a
+  highlighted menu (arrows, Tab or y/n, then Enter).
+- The summary lists every answer, marking unchanged ones and showing the
+  previous or default value of changed ones.
+- The access check question follows the full-tunnel answers and explains
+  what happens on access loss in the chosen mode.
+
+Fixed
+- The retired mesh-watchdog update host is never used; setup moves
+  `update_url` to the NetRiser server. The old host now only redirects.
+
 ## 1.3.2
 
 Changed

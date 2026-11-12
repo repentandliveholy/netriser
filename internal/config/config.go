@@ -79,6 +79,11 @@ type Config struct {
 	// Language of `netriser setup` and the installers: en, ru or fr.
 	Language string `yaml:"language"`
 
+	// vpnBypassActive lifts the allowed_default_interfaces exemption while
+	// recovery restores connectivity or access on a full-tunnel host whose
+	// access comes first (see AccessFirst).
+	vpnBypassActive bool
+
 	// Emergency reboot settings
 	EnableReboot          bool `yaml:"enable_reboot"`
 	RebootMinOutageSec    int  `yaml:"reboot_min_outage_sec"`
@@ -501,8 +506,21 @@ func DefaultRoutePolicy(c *Config) string {
 	}
 }
 
+// AccessFirst reports a full-tunnel host whose setup answer puts access to
+// the machine before keeping all traffic in the VPN.
+func (c *Config) AccessFirst() bool {
+	return c != nil && c.FullTunnel != nil && *c.FullTunnel && c.AllowVPNBypass
+}
+
+// SetVPNBypassActive lifts (true) or restores (false) the exemption of
+// allowed_default_interfaces; only hosts with AccessFirst use it.
+func (c *Config) SetVPNBypassActive(active bool) { c.vpnBypassActive = active && c.AccessFirst() }
+
 // IsAllowedDefaultInterface checks whether an overlay interface is authorized to have default route (e.g. exit-node).
 func (c *Config) IsAllowedDefaultInterface(name string) bool {
+	if c.vpnBypassActive {
+		return false
+	}
 	for _, iface := range c.AllowedDefaultInterfaces {
 		if iface == name {
 			return true

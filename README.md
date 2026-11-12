@@ -174,6 +174,16 @@ routes all of its traffic through a VPN or exit node and stores the answer as
 | Full tunnel, access first (`full_tunnel: true`, `allow_vpn_bypass: true`) | Allowed on `allowed_default_interfaces` | A VPN that cut the host off is stopped, then restarted at most `max_restore_attempts` times |
 | Full tunnel, privacy first (`full_tunnel: true`, `allow_vpn_bypass: false`) | Allowed | The VPN is never bypassed; only the uplink below it is repaired |
 
+**Access check.** Internet probes show whether the machine reaches the
+internet, not whether you can reach the machine: a working full tunnel with a
+kill-switch, or a broken Tailscale, leaves the internet up and access down.
+`mesh_canaries` lists 2-3 always-on hosts in the network you connect through
+(an address alone is pinged, `host:port` is connected to; Windows hosts do not
+answer ping by default). If none answers in two consecutive checks while the
+internet works, a host with a full tunnel where access comes first stops the
+VPN that carries all traffic; other hosts log it. `nr status` shows
+"Remote Access".
+
 Configurations without `full_tunnel` (before 1.3.2) keep the earlier
 behaviour: overlay routes are handled only when checks fail. `nr status` shows
 the active mode as "Default Route".

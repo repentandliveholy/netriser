@@ -130,3 +130,22 @@ func TestRetiredUpdateHostIsNeverUsed(t *testing.T) {
 		t.Error("custom update server replaced")
 	}
 }
+
+func TestVPNBypassOnlyForAccessFirstHosts(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		full   *bool
+		bypass bool
+		lifted bool
+	}{{nil, true, false}, {&no, true, false}, {&yes, false, false}, {&yes, true, true}} {
+		cfg := &Config{FullTunnel: c.full, AllowVPNBypass: c.bypass, AllowedDefaultInterfaces: []string{"wg0"}}
+		cfg.SetVPNBypassActive(true)
+		if got := !cfg.IsAllowedDefaultInterface("wg0"); got != c.lifted {
+			t.Errorf("full=%v bypass=%v: exemption lifted=%v, want %v", c.full, c.bypass, got, c.lifted)
+		}
+		cfg.SetVPNBypassActive(false)
+		if !cfg.IsAllowedDefaultInterface("wg0") {
+			t.Error("exemption not restored")
+		}
+	}
+}

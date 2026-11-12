@@ -44,6 +44,11 @@ type WatchdogState struct {
 	// then only keeps checking.
 	RebootedInOutage bool `json:"rebooted_in_outage,omitempty"`
 	RecoveryPaused   bool `json:"recovery_paused,omitempty"`
+	// AccessFailCount counts consecutive checks in which the internet worked
+	// but no access address answered; AccessActed marks that recovery has
+	// acted on this access loss.
+	AccessFailCount int  `json:"access_fail_count,omitempty"`
+	AccessActed     bool `json:"access_acted,omitempty"`
 }
 
 type StateManager struct {

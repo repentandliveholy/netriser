@@ -39,6 +39,8 @@ func colorStatus(s term.Style, report string) string {
 			lines[i] = s.Green("  [OK]") + l[len("  [OK]"):]
 		case strings.HasPrefix(l, "  [FAIL]"):
 			lines[i] = s.Red("  [FAIL]") + l[len("  [FAIL]"):]
+		case strings.HasPrefix(l, "Remote Access:") && strings.Contains(l, "LOST"):
+			lines[i] = s.Red(l)
 		case strings.HasPrefix(l, "Consecutive Failures:") && !strings.HasSuffix(l, " 0"):
 			lines[i] = s.Yellow(l)
 		case strings.HasPrefix(l, "Quarantined Services:") && !strings.Contains(l, "[None]"):

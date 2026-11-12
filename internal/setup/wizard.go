@@ -251,14 +251,26 @@ func (w *wizard) probes(ctx context.Context) error {
 		w.values["canary_targets"] = targets
 	}
 
-	if !w.explicit("mesh_canaries") {
-		p.explain(p.t("mesh_explain"))
-		mesh, err := p.list(p.t("mesh_q"), w.cur.MeshCanaries, true)
-		if err != nil {
-			return err
-		}
-		w.values["mesh_canaries"] = mesh
+	return nil
+}
+
+// accessAddresses asks for the access check addresses; the explanation says
+// what happens on access loss in the chosen mode.
+func (w *wizard) accessAddresses(accessFirst bool) error {
+	if w.explicit("mesh_canaries") {
+		return nil
 	}
+	p := w.p
+	effect := p.t("access_effect_log")
+	if accessFirst {
+		effect = p.t("access_effect_bypass")
+	}
+	p.explain(p.t("mesh_explain") + " " + effect)
+	mesh, err := p.list(p.t("mesh_q"), w.cur.MeshCanaries, false)
+	if err != nil {
+		return err
+	}
+	w.values["mesh_canaries"] = mesh
 	return nil
 }
 
@@ -330,6 +342,9 @@ func (w *wizard) overlays() error {
 		if !w.explicit("allowed_default_interfaces") {
 			w.values["allowed_default_interfaces"] = []string{}
 		}
+		if err := w.accessAddresses(false); err != nil {
+			return err
+		}
 		return w.customOverlays()
 	}
 
@@ -347,7 +362,11 @@ func (w *wizard) overlays() error {
 	}
 
 	p.explain(p.t("bypass_explain"))
-	if _, err := w.yesNo("allow_vpn_bypass", p.t("bypass_q"), w.cur.AllowVPNBypass, nil); err != nil {
+	accessFirst, err := w.yesNo("allow_vpn_bypass", p.t("bypass_q"), w.cur.AllowVPNBypass, nil)
+	if err != nil {
+		return err
+	}
+	if err := w.accessAddresses(accessFirst); err != nil {
 		return err
 	}
 	return w.customOverlays()
@@ -505,8 +524,8 @@ func (w *wizard) updates() error {
 
 // summaryOrder lists settings in question order for the summary.
 var summaryOrder = []string{
-	"language", "observation_mode", "canary_targets", "mesh_canaries", "full_tunnel",
-	"allowed_default_interfaces", "allow_vpn_bypass", "overlays", "allow_route_sanitation",
+	"language", "observation_mode", "canary_targets", "full_tunnel",
+	"allowed_default_interfaces", "allow_vpn_bypass", "mesh_canaries", "overlays", "allow_route_sanitation",
 	"allow_service_quarantine", "allow_network_restart", "allow_dns_recovery",
 	"management_interface", "enable_reboot", "reboot_min_outage_sec", "auto_update", "update_url",
 }

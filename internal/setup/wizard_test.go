@@ -65,10 +65,10 @@ func TestSetupAnswersAreApplied(t *testing.T) {
 		"n",                            // use these probes
 		"192.0.2.53:53, 192.0.2.54:53", // custom probes
 		"y",                            // use these probes (re-tested)
-		"10.0.0.1:22",                  // mesh canaries
 		"y",                            // all traffic through VPN
 		"",                             // accept suggested wg0
 		"y",                            // access over keeping traffic in the VPN
+		"10.0.0.1:22",                  // access check addresses
 		"y",                            // add custom overlay
 		"corp",                         // name
 		"^corp[0-9]+$",                 // pattern
@@ -94,6 +94,9 @@ func TestSetupAnswersAreApplied(t *testing.T) {
 		cfg.AllowedDefaultInterfaces[0] != "wg0" || !cfg.AllowVPNBypass || cfg.FullTunnel == nil || !*cfg.FullTunnel || cfg.Overlays[0].Services[0] != "corp-vpn.service" ||
 		cfg.ManagementInterface != "eth1" || !cfg.EnableReboot || cfg.RebootMinOutageSec != 600 || cfg.AutoUpdate {
 		t.Fatalf("answers not applied: %+v\n%s", cfg, out)
+	}
+	if !strings.Contains(flat(out.String()), "the VPN that carries all traffic is stopped") {
+		t.Fatalf("access-first host not told what access loss does:\n%s", out)
 	}
 
 	// Rerun: Enter keeps every current answer and changes nothing.
@@ -169,7 +172,7 @@ func TestSetupWithoutFullTunnelSkipsBypassQuestion(t *testing.T) {
 	if err := os.WriteFile(path, []byte("allowed_default_interfaces: [wg0]\nallow_vpn_bypass: false\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	input := "\n\n\n" + "n\n" + strings.Repeat("\n", 40) // observation, probes, mesh, full tunnel = no
+	input := "\n\n" + "n\n" + strings.Repeat("\n", 40) // observation, probes, full tunnel = no
 	opts, out := stubOpts(path, input, true)
 	values, err := Run(context.Background(), opts)
 	if err != nil {
@@ -183,7 +186,8 @@ func TestSetupWithoutFullTunnelSkipsBypassQuestion(t *testing.T) {
 		t.Fatalf("no-full-tunnel answer not applied: %+v", cfg)
 	}
 	text := flat(out.String())
-	if strings.Contains(text, "more important than keeping all traffic") || !strings.Contains(text, "removed immediately, even while") {
+	if strings.Contains(text, "more important than keeping all traffic") || !strings.Contains(text, "removed immediately, even while") ||
+		!strings.Contains(text, "NetRiser records it in its log") {
 		t.Fatalf("wrong questions for a host without a full tunnel:\n%s", text)
 	}
 }

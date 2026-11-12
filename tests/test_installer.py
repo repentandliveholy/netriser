@@ -249,7 +249,7 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
             "more important than keeping all traffic in the VPN": "y",
         })
         self.assertEqual(code, 0, output)
-        for question in ("observation", "internet probes", "Mesh/VPN endpoints", "traffic through a VPN",
+        for question in ("observation", "internet probes", "checking access to this machine", "traffic through a VPN",
                          "Interfaces allowed", "more important than keeping all traffic", "does not recognise", "Stage 1", "Stage 2", "Stage 3",
                          "Uplink interface", "emergency host reboot", "Minimum continuous outage",
                          "automatic updates", "Save these settings"):

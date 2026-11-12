@@ -39,9 +39,11 @@ type TargetResult struct {
 }
 
 type HealthResult struct {
-	Healthy          bool           `json:"healthy"`
-	InternetHealthy  bool           `json:"internet_healthy"`
-	MeshHealthy      bool           `json:"mesh_healthy"`
+	Healthy         bool `json:"healthy"`
+	InternetHealthy bool `json:"internet_healthy"`
+	MeshHealthy     bool `json:"mesh_healthy"`
+	// AccessChecked is set when access addresses (mesh_canaries) exist.
+	AccessChecked    bool           `json:"access_checked,omitempty"`
 	SuccessfulTarget string         `json:"successful_target,omitempty"`
 	Latency          time.Duration  `json:"latency"`
 	CheckedAt        time.Time      `json:"checked_at"`
@@ -93,6 +95,11 @@ func (c *Checker) probeSingle(ctx context.Context, target string, group TargetGr
 	res := TargetResult{
 		Target: target,
 		Group:  group,
+	}
+
+	isURL := strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
+	if group == GroupMesh && !isURL {
+		return c.probeAccess(ctx, target, start)
 	}
 
 	// 1. HTTP Probe
@@ -248,11 +255,19 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 	var mu sync.Mutex
 	successes := 0
 
+	// Access probes get their own context: reaching the internet quorum
+	// cancels the remaining internet probes only.
+	accessCtx, cancelAccess := context.WithTimeout(ctx, c.cfg.ProbeTimeout()+time.Second)
+	defer cancelAccess()
 	for _, item := range targets {
 		wg.Add(1)
 		go func(it targetItem) {
 			defer wg.Done()
-			res := c.probeSingle(fastCtx, it.target, it.group)
+			probeCtx := fastCtx
+			if it.group == GroupMesh {
+				probeCtx = accessCtx
+			}
+			res := c.probeSingle(probeCtx, it.target, it.group)
 			resultChan <- res
 			// Cancel the remaining probes once enough internet targets answered.
 			if res.Success && it.group == GroupInternet {
@@ -319,6 +334,7 @@ func (c *Checker) CheckFast(ctx context.Context) HealthResult {
 		Healthy:          overallHealthy,
 		InternetHealthy:  internetHealthy,
 		MeshHealthy:      meshHealthy,
+		AccessChecked:    len(c.cfg.MeshCanaries) > 0,
 		SuccessfulTarget: target,
 		Latency:          latency,
 		CheckedAt:        time.Now(),
@@ -394,6 +410,7 @@ func (c *Checker) CheckDetailed(ctx context.Context) HealthResult {
 		Healthy:          overallHealthy,
 		InternetHealthy:  internetHealthy,
 		MeshHealthy:      meshHealthy,
+		AccessChecked:    len(c.cfg.MeshCanaries) > 0,
 		SuccessfulTarget: firstSuccess.Target,
 		Latency:          firstSuccess.Latency,
 		CheckedAt:        time.Now(),
@@ -407,4 +424,10 @@ func (h HealthResult) SummaryString() string {
 		return fmt.Sprintf("HEALTHY (verified via %s in %v, internet=%t, mesh=%t, dns=%s)", h.SuccessfulTarget, h.Latency.Round(time.Millisecond), h.InternetHealthy, h.MeshHealthy, h.dnsSummary())
 	}
 	return fmt.Sprintf("UNHEALTHY (internet=%t, mesh=%t, dns=%s)", h.InternetHealthy, h.MeshHealthy, h.dnsSummary())
+}
+
+// AccessLost reports that the internet works but none of the access
+// addresses answers: the path used to reach this machine is broken.
+func (h HealthResult) AccessLost() bool {
+	return h.InternetHealthy && h.AccessChecked && !h.MeshHealthy
 }

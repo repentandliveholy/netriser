@@ -34,6 +34,9 @@ type mockEngine struct {
 	quarantineActs   []netengine.ActionResult
 	restoreActs      []netengine.ActionResult
 	rogue            []string
+	// cfg lets tests see whether allowed interfaces were exempt during a call.
+	cfg               *config.Config
+	bypassDuringClean []bool
 }
 
 func (m *mockEngine) RogueDefaultRoutes(ctx context.Context) ([]string, error) {
@@ -62,6 +65,9 @@ func (m *mockEngine) RemovePolicyRouting(ctx context.Context, b netengine.Baseli
 
 func (m *mockEngine) SurgicalCleanRoutes(ctx context.Context, b netengine.Baseline) ([]netengine.ActionResult, error) {
 	m.cleanCalled = true
+	if m.cfg != nil {
+		m.bypassDuringClean = append(m.bypassDuringClean, !m.cfg.IsAllowedDefaultInterface("wg0"))
+	}
 	if len(m.cleanActions) > 0 {
 		return m.cleanActions, nil
 	}
@@ -1066,5 +1072,128 @@ func TestUplinkOnlyStillRestoresMeshOverlays(t *testing.T) {
 	}
 	if got["tailscaled"] || !got["wg-quick@wg0"] {
 		t.Fatalf("wrong restart policy: %v", got)
+	}
+}
+
+func fullTunnel(cfg *config.Config, accessFirst bool) {
+	yes := true
+	cfg.FullTunnel = &yes
+	cfg.AllowVPNBypass = accessFirst
+	cfg.AllowedDefaultInterfaces = []string{"wg0"}
+	cfg.MeshCanaries = []string{"100.64.0.1"}
+}
+
+var accessLost = canary.HealthResult{Healthy: true, InternetHealthy: true, AccessChecked: true}
+
+// Access first: after two checks without access while the internet works,
+// the full-tunnel VPN on allowed_default_interfaces is bypassed once and its
+// service is recorded for later restore attempts.
+func TestAccessLossBypassesVPNWhenAccessComesFirst(t *testing.T) {
+	w, cfg, engine, checker := setupTestWatchdog(t)
+	fullTunnel(cfg, true)
+	engine.cfg = cfg
+	engine.rogue = []string{"0.0.0.0/0 on wg0"}
+	engine.cleanActions = []netengine.ActionResult{{Type: netengine.ActionQuarantineService, Target: "wg-quick@wg0", Status: netengine.ActionExecuted}}
+	checker.fastResult = accessLost
+
+	rep, _ := w.RunCheckCycle(context.Background())
+	if engine.cleanCalled || !rep.AccessLost || !rep.Healthy {
+		t.Fatalf("acted on the first missed answer: %+v", rep)
+	}
+	w.RunCheckCycle(context.Background())
+	if len(engine.bypassDuringClean) != 1 || !engine.bypassDuringClean[0] {
+		t.Fatalf("VPN not bypassed on the second check: %v", engine.bypassDuringClean)
+	}
+	if cfg.IsAllowedDefaultInterface("wg0") == false {
+		t.Fatal("bypass left active after recovery")
+	}
+	state, _ := w.stateMgr.LoadState()
+	if len(state.QuarantinedServices) != 1 || state.QuarantinedServices[0].Enforced {
+		t.Fatalf("VPN not recorded for restore attempts: %+v", state.QuarantinedServices)
+	}
+	w.RunCheckCycle(context.Background())
+	if len(engine.bypassDuringClean) != 1 {
+		t.Fatal("acted twice on the same access loss")
+	}
+
+	// Access returns: the counters reset.
+	checker.fastResult = canary.HealthResult{Healthy: true, InternetHealthy: true, AccessChecked: true, MeshHealthy: true}
+	w.RunCheckCycle(context.Background())
+	state, _ = w.stateMgr.LoadState()
+	if state.AccessFailCount != 0 || state.AccessActed {
+		t.Fatalf("access recovery not recorded: %+v", state)
+	}
+}
+
+// Privacy first, no full tunnel, or observation mode: access loss is only
+// logged.
+func TestAccessLossOnlyLoggedOtherwise(t *testing.T) {
+	for name, adjust := range map[string]func(*config.Config){
+		"privacy first":  func(c *config.Config) { fullTunnel(c, false) },
+		"no full tunnel": func(c *config.Config) { uplinkOnly(c); c.MeshCanaries = []string{"100.64.0.1"} },
+		"observation":    func(c *config.Config) { fullTunnel(c, true); c.ObservationMode = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, cfg, engine, checker := setupTestWatchdog(t)
+			adjust(cfg)
+			if !cfg.UplinkOnly() {
+				// Without a full tunnel a VPN default route is removed by
+				// enforcement, which other tests cover.
+				engine.rogue = []string{"0.0.0.0/0 on wg0"}
+			}
+			checker.fastResult = accessLost
+			for i := 0; i < 3; i++ {
+				w.RunCheckCycle(context.Background())
+			}
+			if engine.cleanCalled {
+				t.Fatal("bypassed a VPN without access-first consent")
+			}
+		})
+	}
+}
+
+// A restored VPN that gives internet but cuts access is a failed restore.
+func TestRestoreThatCutsAccessIsRequarantined(t *testing.T) {
+	w, cfg, engine, checker := setupTestWatchdog(t)
+	fullTunnel(cfg, true)
+	engine.cfg = cfg
+	w.stateMgr.SaveState(&WatchdogState{Version: CurrentStateVersion, QuarantinedServices: []ServiceQuarantineRecord{
+		{Name: "wg-quick@wg0", QuarantinedAt: w.clock.Now().Add(-time.Hour), NextRetryAfter: w.clock.Now().Add(-time.Minute)},
+	}})
+	calls := 0
+	w.SetChecker(&dynamicChecker{onCheckFast: func(context.Context) canary.HealthResult {
+		calls++
+		if calls == 1 {
+			return canary.HealthResult{Healthy: true, InternetHealthy: true, AccessChecked: true, MeshHealthy: true}
+		}
+		return accessLost
+	}})
+	w.RunCheckCycle(context.Background())
+	state, _ := w.stateMgr.LoadState()
+	if len(state.QuarantinedServices) != 1 || state.QuarantinedServices[0].Attempts != 1 {
+		t.Fatalf("restore that cut access was accepted: %+v", state.QuarantinedServices)
+	}
+	if len(engine.bypassDuringClean) == 0 || !engine.bypassDuringClean[len(engine.bypassDuringClean)-1] {
+		t.Fatal("re-quarantine did not bypass the allowed VPN")
+	}
+	_ = checker
+}
+
+// Internet down on an access-first full-tunnel host: stage 1 may remove the
+// allowed VPN's routes; on a privacy-first host it may not.
+func TestFailureRecoveryBypassesAllowedVPNOnlyWhenAccessFirst(t *testing.T) {
+	for _, accessFirst := range []bool{true, false} {
+		w, cfg, engine, _ := setupTestWatchdog(t)
+		fullTunnel(cfg, accessFirst)
+		engine.cfg = cfg
+		if _, err := w.RunCheckCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(engine.bypassDuringClean) == 0 || engine.bypassDuringClean[0] != accessFirst {
+			t.Fatalf("accessFirst=%v: bypass during stage 1 = %v", accessFirst, engine.bypassDuringClean)
+		}
+		if !cfg.IsAllowedDefaultInterface("wg0") {
+			t.Fatal("bypass left active")
+		}
 	}
 }

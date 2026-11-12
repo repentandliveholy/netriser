@@ -209,7 +209,7 @@ try {
     if ((& $BinPath --config $EffectiveConfig observe status) -match 'Observation mode: ON') {
         Write-Host 'NetRiser is in observation mode: it records incidents but changes nothing. Enable recovery with: nr observe off'
     }
-    Write-Host "Logs: $(Join-Path $NewData 'logs\netriser.log') (legacy/custom paths are preserved)"
+    Write-Host 'Logs: see "Log file" above (also shown by: nr check-config)'
 } catch {
     Rollback-Install
     throw

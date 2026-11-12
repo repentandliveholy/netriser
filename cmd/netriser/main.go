@@ -353,6 +353,8 @@ func main() {
 			fmt.Printf("Valid:              %t\n", rep.Valid)
 			fmt.Printf("Baseline Interface: %s\n", rep.Baseline.Interface)
 			fmt.Printf("Baseline Gateway:   %s\n", rep.Baseline.Gateway)
+			fmt.Printf("Log File:           %s\n", cfg.LogFile)
+			fmt.Printf("Incident Reports:   %s\n", cfg.IncidentDir)
 			if len(rep.Errors) > 0 {
 				fmt.Println("\nValidation Errors:")
 				for _, e := range rep.Errors {

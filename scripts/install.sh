@@ -288,5 +288,5 @@ echo "Commands: nr status; nr setup (answer the installation questions again); n
 if run_root "$BIN" --config "$EFFECTIVE_CONFIG" observe status 2>/dev/null | grep -q 'Observation mode: ON'; then
   echo 'NetRiser is in observation mode: it records incidents but changes nothing. Enable recovery with: nr observe off'
 fi
-echo "Logs: $(if [ "$OS" = linux ]; then echo 'journalctl -u netriser -f; /var/log/netriser.log'; else echo '/var/log/netriser.log'; fi)"
+echo "Logs: see \"Log file\" above (also shown by: nr check-config)$(if [ "$OS" = linux ]; then echo '; service journal: journalctl -u netriser -f'; fi)"
 SUCCESS=1

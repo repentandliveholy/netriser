@@ -85,8 +85,8 @@ configuration without asking.
 
 Keep observation mode on. NetRiser then records incidents and the actions it
 would have taken, but changes no routes, services, DNS configuration or
-binaries. Review `/var/log/netriser.log` and the incident directory for a
-while, then enable recovery with `nr observe off`. Switch back at any time with
+binaries. Review the log file and the incident directory (`nr check-config`
+shows both paths) for a while, then enable recovery with `nr observe off`. Switch back at any time with
 `nr observe on`.
 
 ## Migration from Mesh Watchdog

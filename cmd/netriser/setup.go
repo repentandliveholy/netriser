@@ -104,6 +104,7 @@ func runSetup(opts cliOptions) int {
 		fmt.Printf("Interfaces allowed to carry the default route: %s\n", strings.Join(cfg.AllowedDefaultInterfaces, ", "))
 	}
 	fmt.Printf("Checks: %ds healthy / %ds during outage\n", cfg.CheckIntervalSec, cfg.RecoveryIntervalSec)
+	fmt.Printf("Log file: %s\nIncident reports: %s\n", cfg.LogFile, cfg.IncidentDir)
 	if changed && !opts.noRestart {
 		mgr := service.NewManager(cfg)
 		if state, err := mgr.Status(); err == nil && serviceRunning(state) {

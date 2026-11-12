@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.3 (not released yet)
+## 1.3.3
 
 Access check
 - `mesh_canaries` became a real access check: always-on hosts in the network

@@ -337,7 +337,7 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 			recoveredCount := 0
 
 			for idx, rec := range state.QuarantinedServices {
-				if broken || recoveredCount >= 1 || w.clock.Now().Before(rec.NextRetryAfter) {
+				if rec.GaveUp || broken || recoveredCount >= 1 || w.clock.Now().Before(rec.NextRetryAfter) {
 					remaining = append(remaining, rec)
 					continue
 				}
@@ -380,11 +380,16 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 					if w.cfg.AllowRouteSanitation && bErr == nil && baseline.IsValid() {
 						_, _ = w.engine.SurgicalCleanRoutes(ctx, baseline)
 					}
-					backoffMins := 5 * (1 << (rec.Attempts - 1))
-					if backoffMins > 120 {
-						backoffMins = 120
+					if limit := w.cfg.MaxRestoreAttempts; limit > 0 && rec.Attempts >= limit {
+						rec.GaveUp = true
+						w.logger.Warn("Gave up restoring %s after %d attempts: each restart cut connectivity. It stays stopped; start it yourself once its server is reachable.", rec.Name, rec.Attempts)
+					} else {
+						backoffMins := 5 * (1 << (rec.Attempts - 1))
+						if backoffMins > 120 {
+							backoffMins = 120
+						}
+						rec.NextRetryAfter = w.clock.Now().Add(time.Duration(backoffMins) * time.Minute)
 					}
-					rec.NextRetryAfter = w.clock.Now().Add(time.Duration(backoffMins) * time.Minute)
 					remaining = append(remaining, rec)
 					broken = true
 				}
@@ -413,6 +418,12 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 
 	if !w.cfg.ObservationMode {
 		for i, rec := range state.QuarantinedServices {
+			// A service whose restart already cut connectivity caused the
+			// problem; releasing it during an outage would only reset its
+			// restart limit.
+			if rec.GaveUp || rec.Attempts > 0 {
+				continue
+			}
 			if !rec.QuarantinedAt.IsZero() && w.clock.Now().Sub(rec.QuarantinedAt) < 10*time.Minute {
 				continue
 			}
@@ -645,9 +656,14 @@ func (w *Watchdog) recordQuarantine(actions []netengine.ActionResult) {
 	}
 	for _, name := range stopped {
 		found := false
-		for _, q := range curState.QuarantinedServices {
+		for i, q := range curState.QuarantinedServices {
 			if q.Name == name {
 				found = true
+				// The user restarted it after NetRiser gave up and it failed
+				// again: this is a new incident with a fresh restart budget.
+				if q.GaveUp {
+					curState.QuarantinedServices[i] = ServiceQuarantineRecord{Name: name, QuarantinedAt: w.clock.Now(), InitialState: "active", NextRetryAfter: w.clock.Now().Add(5 * time.Minute)}
+				}
 				break
 			}
 		}
@@ -806,7 +822,11 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	if len(rep.QuarantinedServices) > 0 {
 		var list []string
 		for _, q := range rep.QuarantinedServices {
-			list = append(list, fmt.Sprintf("%s (retry in %v)", q.Name, time.Until(q.NextRetryAfter).Round(time.Second)))
+			if q.GaveUp {
+				list = append(list, fmt.Sprintf("%s (left stopped after %d failed restarts; start it yourself)", q.Name, q.Attempts))
+			} else {
+				list = append(list, fmt.Sprintf("%s (retry in %v)", q.Name, time.Until(q.NextRetryAfter).Round(time.Second)))
+			}
 		}
 		buf.WriteString(fmt.Sprintf("Quarantined Services: %s\n", strings.Join(list, ", ")))
 	} else {

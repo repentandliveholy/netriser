@@ -2,6 +2,13 @@
 
 ## 1.3.1
 
+Changed
+- A stopped overlay service (for example a WireGuard tunnel whose server is
+  unreachable) is restarted at most `max_restore_attempts` times (default 3)
+  when each restart cuts connectivity again; it is then left stopped and
+  `nr status` says so. Previously restarts continued every two hours forever.
+  An outage no longer releases a service whose restart already failed.
+
 Added
 - `nr logs [N|all]` prints the last log entries, continuing into the rotated
   log; `nr live` follows new entries in real time without blocking rotation.

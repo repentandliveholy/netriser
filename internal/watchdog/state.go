@@ -22,6 +22,9 @@ type ServiceQuarantineRecord struct {
 	Attempts          int       `json:"attempts"`
 	NextRetryAfter    time.Time `json:"next_retry_after"`
 	ReleaseRetryAfter time.Time `json:"release_retry_after,omitempty"`
+	// GaveUp is set after max_restore_attempts restarts that each cut
+	// connectivity again; the service is then left stopped.
+	GaveUp bool `json:"gave_up,omitempty"`
 }
 
 // WatchdogState represents the consolidated, versioned state of the watchdog.

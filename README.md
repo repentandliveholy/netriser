@@ -126,6 +126,7 @@ Important settings:
 | `observation_mode` | Read-only mode: log incidents without recovery actions or updates. On for new installations. Toggle with `nr observe on\|off`. |
 | `allow_route_sanitation` | Permit targeted cleanup of suspicious routes. |
 | `allow_service_quarantine` | Permit stopping an overlay service that publishes a rogue route. |
+| `max_restore_attempts` | Restarts of a stopped overlay that may cut connectivity again before it is left stopped (default 3, `0` = unlimited). |
 | `monitored_services` | Services eligible for quarantine; `"*"` means any service of a detected overlay. |
 | `allowed_default_interfaces` | Overlay interfaces allowed to carry the default route, such as `tailscale0` on a host that uses a Tailscale exit node. |
 | `allow_vpn_bypass` | Permit removing the routes of, or stopping, a full-tunnel VPN that cut the host off. Off for new installations. |

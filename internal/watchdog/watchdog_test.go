@@ -911,3 +911,64 @@ func TestStageOneOverlayStopIsRecordedForRestore(t *testing.T) {
 		t.Fatalf("stage 1 overlay stop not recorded: %+v", state)
 	}
 }
+
+// A restart that cuts connectivity is retried at most max_restore_attempts
+// times; the service is then left stopped and not released during outages.
+func TestQuarantineRestoreGivesUpAfterMaxAttempts(t *testing.T) {
+	w, cfg, engine, _ := setupTestWatchdog(t)
+	cfg.MaxRestoreAttempts = 3
+	healthy := false
+	w.SetChecker(&dynamicChecker{onCheckFast: func(context.Context) canary.HealthResult {
+		healthy = !healthy // healthy before each restore, broken right after it
+		return canary.HealthResult{Healthy: healthy}
+	}})
+	svc := "WireGuardTunnel$wg-test"
+	w.stateMgr.SaveState(&WatchdogState{Version: CurrentStateVersion, QuarantinedServices: []ServiceQuarantineRecord{
+		{Name: svc, QuarantinedAt: w.clock.Now().Add(-time.Hour), NextRetryAfter: w.clock.Now().Add(-time.Minute)},
+	}})
+	for cycle := 1; cycle <= 4; cycle++ {
+		if _, err := w.RunCheckCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		state, _ := w.stateMgr.LoadState()
+		if len(state.QuarantinedServices) != 1 {
+			t.Fatalf("cycle %d: record lost: %+v", cycle, state.QuarantinedServices)
+		}
+		rec := state.QuarantinedServices[0]
+		if want := cycle >= 3; rec.GaveUp != want {
+			t.Fatalf("cycle %d: gave up = %v, attempts %d", cycle, rec.GaveUp, rec.Attempts)
+		}
+		state.QuarantinedServices[0].NextRetryAfter = w.clock.Now().Add(-time.Minute)
+		w.stateMgr.SaveState(state)
+	}
+	if len(engine.restoredServices) != 3 {
+		t.Fatalf("restarted %d times, want 3", len(engine.restoredServices))
+	}
+
+	// An outage must not release the culprit either.
+	w.SetChecker(&dynamicChecker{})
+	if _, err := w.RunCheckCycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(engine.restoredServices) != 3 {
+		t.Fatalf("released during outage: %v", engine.restoredServices)
+	}
+	if out := w.Status(context.Background()); !strings.Contains(out, "left stopped after 3 failed restarts") {
+		t.Fatalf("status does not explain the stopped service:\n%s", out)
+	}
+}
+
+// When the user starts a given-up service and NetRiser has to stop it again,
+// the new incident gets a fresh restart budget.
+func TestStoppingGivenUpServiceAgainResetsBudget(t *testing.T) {
+	w, _, _, _ := setupTestWatchdog(t)
+	svc := "WireGuardTunnel$wg-test"
+	w.stateMgr.SaveState(&WatchdogState{Version: CurrentStateVersion, QuarantinedServices: []ServiceQuarantineRecord{
+		{Name: svc, Attempts: 3, GaveUp: true},
+	}})
+	w.recordQuarantine([]netengine.ActionResult{{Type: netengine.ActionQuarantineService, Target: svc, Status: netengine.ActionExecuted}})
+	state, _ := w.stateMgr.LoadState()
+	if rec := state.QuarantinedServices[0]; rec.GaveUp || rec.Attempts != 0 || rec.NextRetryAfter.IsZero() {
+		t.Fatalf("budget not reset: %+v", rec)
+	}
+}

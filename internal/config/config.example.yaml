@@ -94,6 +94,10 @@ fail_threshold_stage4_reboot: 5  # Emergency host reboot, if enabled.
 
 allow_route_sanitation: true
 allow_service_quarantine: true
+# A stopped overlay service is restarted after 5, 10, 20... minutes while the
+# network is healthy. After this many restarts that cut connectivity again it
+# stays stopped until you start it yourself. 0 = keep trying.
+max_restore_attempts: 3
 allow_network_restart: true
 
 # Emergency reboot is disabled unless explicitly enabled.

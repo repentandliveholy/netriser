@@ -62,6 +62,7 @@ type Config struct {
 	ObservationMode          bool     `yaml:"observation_mode"`
 	AllowRouteSanitation     bool     `yaml:"allow_route_sanitation"`
 	AllowServiceQuarantine   bool     `yaml:"allow_service_quarantine"`
+	MaxRestoreAttempts       int      `yaml:"max_restore_attempts"`
 	AllowNetworkRestart      bool     `yaml:"allow_network_restart"`
 	AllowedDefaultInterfaces []string `yaml:"allowed_default_interfaces"`
 	// AllowVPNBypass permits removing the routes of, or stopping, a full-tunnel
@@ -159,6 +160,7 @@ func DefaultConfig() *Config {
 		ObservationMode:           true, // New installations start read-only.
 		AllowRouteSanitation:      true,
 		AllowServiceQuarantine:    true,
+		MaxRestoreAttempts:        3,
 		AllowNetworkRestart:       true,
 		AllowedDefaultInterfaces:  []string{},
 		AllowVPNBypass:            false,
@@ -286,6 +288,9 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate escalation thresholds: 0 < Stage1 <= Stage2 <= Stage3 <= Stage4Reboot
+	if c.MaxRestoreAttempts < 0 {
+		return fmt.Errorf("max_restore_attempts must be 0 (unlimited) or positive, got %d", c.MaxRestoreAttempts)
+	}
 	if c.FailThresholdStage1 <= 0 {
 		return fmt.Errorf("fail_threshold_stage1 must be positive, got %d", c.FailThresholdStage1)
 	}

@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.3.0}"
+VERSION="${VERSION:-1.3.1}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
@@ -68,7 +68,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.3.0: updates require an Ed25519-signed manifest and never downgrade; netriser setup asks every installation question and can be rerun; protocol-agnostic VPN/overlay detection (WireGuard, OpenVPN, IPsec, commercial VPN clients, Tailscale, ZeroTier, NetBird, Nebula, custom definitions); full-tunnel VPNs are left alone unless allow_vpn_bypass is enabled; new installations start in observation mode.",
+  "release_notes": "NetRiser 1.3.1: nr logs and nr live show the log without tail; a stopped overlay (for example a WireGuard tunnel whose server is unreachable) is restarted at most 3 times (max_restore_attempts) and then left stopped; installers show the real log path; clearer migrate and update messages.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},

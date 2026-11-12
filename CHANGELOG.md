@@ -9,6 +9,12 @@ Setup
   every question and failed only when saving.
 - The value Enter selects is marked "default" instead of "recommended".
 
+Status
+- `nr status` no longer shows "Reboot Budget (24h)": it counted reboots of
+  the last 24 hours against a limit whose window is
+  `reboot_budget_window_sec` (one hour by default). With emergency reboot
+  on, the line now reads "Emergency Reboot: true (one per outage)".
+
 ## 1.3.3
 
 Access check

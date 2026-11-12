@@ -1040,8 +1040,11 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	buf.WriteString(fmt.Sprintf("Policy Rule Priority: %d\n", rep.PolicyRoutingPriority))
 	buf.WriteString(fmt.Sprintf("Automatic Updates:    %t (every %ds)\n", rep.AutoUpdate, rep.AutoUpdateIntervalSec))
 	buf.WriteString(fmt.Sprintf("Default Route:        %s\n", rep.DefaultRoutePolicy))
-	buf.WriteString(fmt.Sprintf("Emergency Reboot:     %t\n", rep.EnableReboot))
-	buf.WriteString(fmt.Sprintf("Reboot Budget (24h):  %d used / %d allowed\n", rep.RecentReboots24h, rep.RebootBudget24h))
+	if rep.EnableReboot {
+		buf.WriteString("Emergency Reboot:     true (one per outage)\n")
+	} else {
+		buf.WriteString("Emergency Reboot:     false\n")
+	}
 	buf.WriteString(fmt.Sprintf("Consecutive Failures: %d\n", rep.ConsecutiveFailures))
 	if rep.AccessChecked {
 		if rep.AccessOK {

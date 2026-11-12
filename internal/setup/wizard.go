@@ -21,7 +21,9 @@ import (
 
 	"github.com/repentandliveholy/netriser/internal/canary"
 	"github.com/repentandliveholy/netriser/internal/config"
+	"github.com/repentandliveholy/netriser/internal/i18n"
 	"github.com/repentandliveholy/netriser/internal/netengine"
+	"github.com/repentandliveholy/netriser/internal/term"
 )
 
 // Detected is a VPN or overlay interface present on this host.
@@ -44,7 +46,17 @@ type Options struct {
 	GOOS     string
 	Probe    func(context.Context, *config.Config) canary.HealthResult
 	Detect   func() []Detected
-	Uplink   func(context.Context, *config.Config) string
+	Uplink   func(context.Context, *config.Config) (iface, gateway string)
+	// Language, when set, is used for the questions instead of asking.
+	Language string
+}
+
+// EffectiveLanguage is the configured language; an unset language is English.
+func EffectiveLanguage(cfg *config.Config) string {
+	if l := i18n.Normalize(cfg.Language); l != "" {
+		return l
+	}
+	return "en"
 }
 
 // Current loads the settings that questions offer as defaults: the existing
@@ -93,7 +105,7 @@ func Run(ctx context.Context, opts Options) (map[string]any, error) {
 	if opts.Uplink == nil {
 		opts.Uplink = detectUplink
 	}
-	w := &wizard{p: &prompter{r: bufio.NewReader(opts.In), w: opts.Out}, opts: opts, cur: current, values: values, existing: existing}
+	w := &wizard{p: &prompter{r: bufio.NewReader(opts.In), w: opts.Out, lang: "en", s: term.For(opts.Out), existing: existing}, opts: opts, cur: current, values: values, existing: existing}
 	if err := w.run(ctx, existing); err != nil {
 		return nil, err
 	}
@@ -113,34 +125,69 @@ func (w *wizard) explicit(key string) bool {
 	return ok
 }
 
-func (w *wizard) yesNo(key, question string, def bool) (bool, error) {
+func (w *wizard) yesNo(key, question string, def bool, rec *bool) (bool, error) {
 	if v, ok := w.opts.Explicit[key].(bool); ok {
 		return v, nil
 	}
-	v, err := w.p.yesNo(question, def)
+	v, err := w.p.yesNo(question, def, rec)
 	if err == nil {
 		w.values[key] = v
 	}
 	return v, err
 }
 
-func (w *wizard) section(title string) { w.p.printf("\n== %s ==\n", title) }
+func ptr(b bool) *bool { return &b }
+
+func (w *wizard) section(key string) {
+	w.p.printf("\n%s\n", w.p.s.Title("== "+w.p.t(key)+" =="))
+	w.p.grouped = true
+}
 
 func (w *wizard) run(ctx context.Context, existing bool) error {
 	p := w.p
+	if lang := i18n.Normalize(fmt.Sprint(w.opts.Explicit["language"])); lang != "" {
+		p.lang = lang
+	} else if lang := i18n.Normalize(w.opts.Language); lang != "" {
+		p.lang = lang
+		if lang != EffectiveLanguage(w.cur) {
+			w.values["language"] = lang
+		}
+	} else {
+		def := i18n.Normalize(w.cur.Language)
+		if def == "" {
+			def = i18n.FromEnvironment()
+		}
+		if def == "" {
+			def = "en"
+		}
+		lang, err := p.chooseLanguage(def)
+		if err != nil {
+			return err
+		}
+		p.lang = lang
+		w.values["language"] = lang
+	}
+
 	path := w.opts.ConfigPath
 	if path == "" {
 		path = config.DefaultConfigPath()
 	}
-	p.printf("NetRiser setup. Answers are saved to %s.\n", path)
+	p.printf("\n%s\n", p.s.Bold(p.t("intro_saved", path)))
 	if existing {
-		p.printf("Defaults are your current settings; press Enter to keep each one.\n")
+		p.note(p.t("intro_existing"))
+	} else {
+		p.note(p.t("intro_new"))
 	}
-	p.printf("Answer these questions again at any time with: netriser setup\n")
+	p.explain(p.t("intro_howto"))
+	p.explain(p.t("intro_rerun"))
 
-	w.section("Operating mode")
-	p.printf("Observation mode is read-only: NetRiser records incidents and the actions it\nwould take, but changes no routes, services, DNS or binaries (no updates).\n")
-	if _, err := w.yesNo("observation_mode", "Start in observation (read-only) mode", w.cur.ObservationMode); err != nil {
+	w.section("sec_mode")
+	p.explain(p.t("obs_explain"))
+	var obsRec *bool
+	if !existing {
+		obsRec = ptr(true)
+	}
+	if _, err := w.yesNo("observation_mode", p.t("obs_q"), w.cur.ObservationMode, obsRec); err != nil {
 		return err
 	}
 
@@ -161,36 +208,37 @@ func (w *wizard) run(ctx context.Context, existing bool) error {
 
 func (w *wizard) probes(ctx context.Context) error {
 	p := w.p
-	w.section("Connectivity probes")
+	w.section("sec_probes")
 	targets := w.cur.CanaryTargets
 	if v, ok := w.opts.Explicit["canary_targets"].([]string); ok {
 		targets = v
 	}
 	if !w.explicit("canary_targets") {
+		p.explain(p.t("probes_explain"))
 		for {
 			answered := w.showProbe(ctx, targets)
 			quorum := w.cur.InternetQuorum(len(targets) + boolInt(w.cur.HTTPFallbackURL != ""))
 			keepDefault := answered >= quorum
 			if !keepDefault {
-				p.printf("Only %d of the required %d probes answered. If this network blocks these\nresolvers, enter targets it can reach (host:port), such as your own DNS servers.\n", answered, quorum)
+				p.warn(p.t("probes_short", answered, quorum))
 			}
-			keep, err := p.yesNo("Use these internet probes", keepDefault)
+			keep, err := p.yesNo(p.t("probes_q"), keepDefault, ptr(keepDefault))
 			if err != nil {
 				return err
 			}
 			if keep {
 				break
 			}
-			next, err := p.list("Internet probes (host:port)", targets)
+			next, err := p.list(p.t("probes_list_q"), targets, false)
 			if err != nil {
 				return err
 			}
 			if len(next) == 0 {
-				p.printf("At least one internet probe is required.\n")
+				p.warn(p.t("probes_needed"))
 				continue
 			}
 			if reflect.DeepEqual(next, targets) {
-				p.printf("Keeping the current probes.\n")
+				p.note(p.t("probes_kept"))
 				break
 			}
 			targets = next
@@ -199,8 +247,8 @@ func (w *wizard) probes(ctx context.Context) error {
 	}
 
 	if !w.explicit("mesh_canaries") {
-		p.printf("Optional: endpoints reachable only through your mesh/VPN (for example a\nlighthouse or management host) are monitored separately.\n")
-		mesh, err := p.list("Mesh/VPN endpoints to monitor (host:port)", w.cur.MeshCanaries)
+		p.explain(p.t("mesh_explain"))
+		mesh, err := p.list(p.t("mesh_q"), w.cur.MeshCanaries, true)
 		if err != nil {
 			return err
 		}
@@ -210,11 +258,12 @@ func (w *wizard) probes(ctx context.Context) error {
 }
 
 func (w *wizard) showProbe(ctx context.Context, targets []string) int {
+	p := w.p
 	cfg := *w.cur
 	cfg.CanaryTargets = targets
 	cfg.MeshCanaries = nil
 	cfg.DNSCanaries = nil
-	w.p.printf("Testing internet probes...\n")
+	p.printf("%s\n", p.t("probes_testing"))
 	res := w.opts.Probe(ctx, &cfg)
 	answered := 0
 	for _, d := range res.Details {
@@ -223,13 +272,13 @@ func (w *wizard) showProbe(ctx context.Context, targets []string) int {
 		}
 		if d.Success {
 			answered++
-			w.p.printf("  ok    %-28s %v\n", d.Target, d.Latency.Round(time.Millisecond))
+			p.printf("  %s %-28s %v\n", p.s.Green(fmt.Sprintf("%-6s", p.t("probe_ok"))), d.Target, d.Latency.Round(time.Millisecond))
 		} else {
-			reason := "no answer"
+			reason := p.t("probe_noanswer")
 			if d.Error != nil {
 				reason = d.Error.Error()
 			}
-			w.p.printf("  FAIL  %-28s %s\n", d.Target, reason)
+			p.printf("  %s %-28s %s\n", p.s.Red(fmt.Sprintf("%-6s", p.t("probe_fail"))), d.Target, reason)
 		}
 	}
 	return answered
@@ -237,15 +286,19 @@ func (w *wizard) showProbe(ctx context.Context, targets []string) int {
 
 func (w *wizard) overlays() error {
 	p := w.p
-	w.section("VPNs and overlay networks")
+	w.section("sec_overlays")
 	detected := w.opts.Detect()
 	var vpnIfaces []string
 	if len(detected) == 0 {
-		p.printf("No VPN or overlay interfaces are active right now. Built-in detection covers\nWireGuard, OpenVPN, IPsec, Tailscale, ZeroTier, NetBird, Nebula, commercial VPN\nclients and generic tunnels.\n")
+		p.note(p.t("ov_none"))
 	} else {
-		p.printf("Detected on this host:\n")
+		p.printf("%s\n", p.t("ov_detected"))
 		for _, d := range detected {
-			p.printf("  %-20s %s (%s)\n", d.Interface, d.Name, d.Kind)
+			kind := p.t("kind_vpn")
+			if d.Kind == netengine.KindMesh {
+				kind = p.t("kind_mesh")
+			}
+			p.printf("  %-20s %s (%s)\n", p.s.Bold(d.Interface), d.Name, kind)
 			if d.Kind == netengine.KindVPN {
 				vpnIfaces = append(vpnIfaces, d.Interface)
 			}
@@ -259,16 +312,16 @@ func (w *wizard) overlays() error {
 	if v, ok := w.opts.Explicit["full_tunnel"].(bool); ok {
 		full = v
 	} else {
-		p.printf("A full tunnel means this host deliberately sends all of its own traffic\nthrough a VPN or an exit node.\n")
+		p.explain(p.t("ft_explain"))
 		var err error
-		if full, err = p.yesNo("Does this host route all of its traffic through a VPN or exit node", full); err != nil {
+		if full, err = p.yesNo(p.t("ft_q"), full, nil); err != nil {
 			return err
 		}
 		w.values["full_tunnel"] = full
 	}
 
 	if !full {
-		p.printf("Only the physical uplink may carry this host's traffic. A VPN, exit node or\ntunnel that takes over the default route is removed immediately, even while\nthe internet still works, and a VPN stopped for this is not restarted.\n")
+		p.explain(p.t("ft_no_explain"))
 		if !w.explicit("allowed_default_interfaces") {
 			w.values["allowed_default_interfaces"] = []string{}
 		}
@@ -280,15 +333,16 @@ func (w *wizard) overlays() error {
 		if len(def) == 0 {
 			def = vpnIfaces
 		}
-		allowed, err := p.list("Interfaces allowed to carry the default route", def)
+		p.explain(p.t("ft_allowed_explain"))
+		allowed, err := p.list(p.t("ft_allowed_q"), def, false)
 		if err != nil {
 			return err
 		}
 		w.values["allowed_default_interfaces"] = allowed
 	}
 
-	p.printf("If the VPN cuts the host off (its server is unreachable, a kill-switch blocks\neverything else), NetRiser can restore access by removing the VPN's routes or\nstopping it: traffic then leaves outside the VPN. Answer no if this host must\nnever send traffic outside the VPN, even at the cost of losing access.\n")
-	if _, err := w.yesNo("allow_vpn_bypass", "Is access to this host more important than keeping all traffic in the VPN", w.cur.AllowVPNBypass); err != nil {
+	p.explain(p.t("bypass_explain"))
+	if _, err := w.yesNo("allow_vpn_bypass", p.t("bypass_q"), w.cur.AllowVPNBypass, nil); err != nil {
 		return err
 	}
 	return w.customOverlays()
@@ -303,11 +357,11 @@ func (w *wizard) customOverlays() error {
 	p := w.p
 	list := append([]config.OverlayConfig{}, w.cur.Overlays...)
 	if len(list) > 0 {
-		p.printf("Custom VPN/overlay definitions:\n")
+		p.printf("%s\n", p.t("custom_list"))
 		for _, o := range list {
-			p.printf("  %s: interface %q, kind %s, services %s\n", o.Name, o.Interface, kindOr(o.Kind), strings.Join(o.Services, ", "))
+			p.printf("%s\n", p.t("custom_item", o.Name, o.Interface, kindOr(o.Kind), strings.Join(o.Services, ", ")))
 		}
-		keep, err := p.yesNo("Keep these definitions", true)
+		keep, err := p.yesNo(p.t("custom_keep_q"), true, ptr(true))
 		if err != nil {
 			return err
 		}
@@ -315,30 +369,31 @@ func (w *wizard) customOverlays() error {
 			list = nil
 		}
 	}
-	question := "Do you use a VPN or overlay that NetRiser does not recognise"
+	p.explain(p.t("custom_explain"))
+	question := p.t("custom_add_q")
 	for {
-		add, err := p.yesNo(question, false)
+		add, err := p.yesNo(question, false, ptr(false))
 		if err != nil {
 			return err
 		}
 		if !add {
 			break
 		}
-		question = "Add another one"
+		question = p.t("custom_more_q")
 		var o config.OverlayConfig
-		if o.Name, err = p.text("Name", "custom-vpn"); err != nil {
+		if o.Name, err = p.text(p.t("custom_name_q"), "custom-vpn", "", false); err != nil {
 			return err
 		}
 		for {
-			if o.Interface, err = p.text("Interface name pattern (regular expression, e.g. ^corp[0-9]+$)", ""); err != nil {
+			if o.Interface, err = p.text(p.t("custom_iface_q"), "", "", true); err != nil {
 				return err
 			}
-			if _, cerr := regexp.Compile(o.Interface); o.Interface != "" && cerr == nil {
+			if _, cerr := regexp.Compile(o.Interface); cerr == nil {
 				break
 			}
-			p.printf("Please enter a valid regular expression.\n")
+			p.warn(p.t("custom_iface_bad"))
 		}
-		mesh, err := p.yesNo("Is it a mesh overlay that should never carry the default route (no = full-tunnel VPN)", false)
+		mesh, err := p.yesNo(p.t("custom_mesh_q"), false, nil)
 		if err != nil {
 			return err
 		}
@@ -347,7 +402,7 @@ func (w *wizard) customOverlays() error {
 			o.Kind = "mesh"
 		}
 		for {
-			if o.Services, err = p.list("Services that run it ({iface} = interface name)", nil); err != nil {
+			if o.Services, err = p.list(p.t("custom_services_q"), nil, false); err != nil {
 				return err
 			}
 			ok := true
@@ -357,7 +412,7 @@ func (w *wizard) customOverlays() error {
 			if ok {
 				break
 			}
-			p.printf("Service names may contain letters, digits, spaces and @ . _ : - $ { }.\n")
+			p.warn(p.t("custom_services_bad"))
 		}
 		list = append(list, o)
 	}
@@ -370,33 +425,45 @@ func (w *wizard) customOverlays() error {
 
 func (w *wizard) recovery(ctx context.Context) error {
 	p := w.p
-	w.section("Recovery actions")
-	p.printf("Actions escalate in stages on consecutive failed checks.\n")
-	if _, err := w.yesNo("allow_route_sanitation", "Stage 1: remove rogue default routes published by overlays and restore the uplink route", w.cur.AllowRouteSanitation); err != nil {
+	w.section("sec_recovery")
+	p.explain(p.t("rec_explain"))
+	p.explain(p.t("s1_explain"))
+	if _, err := w.yesNo("allow_route_sanitation", p.t("s1_q"), w.cur.AllowRouteSanitation, ptr(true)); err != nil {
 		return err
 	}
-	if _, err := w.yesNo("allow_service_quarantine", "Stage 2: stop an overlay service that publishes a rogue route (restarted after recovery)", w.cur.AllowServiceQuarantine); err != nil {
+	if w.cur.MaxRestoreAttempts > 0 {
+		p.explain(p.t("s2_explain", w.cur.MaxRestoreAttempts))
+	} else {
+		p.explain(p.t("s2_explain_unlimited"))
+	}
+	if _, err := w.yesNo("allow_service_quarantine", p.t("s2_q"), w.cur.AllowServiceQuarantine, ptr(true)); err != nil {
 		return err
 	}
-	if _, err := w.yesNo("allow_network_restart", "Stage 3: restart network components and re-enable a disabled uplink", w.cur.AllowNetworkRestart); err != nil {
+	p.explain(p.t("s3_explain"))
+	if _, err := w.yesNo("allow_network_restart", p.t("s3_q"), w.cur.AllowNetworkRestart, ptr(true)); err != nil {
 		return err
 	}
 	if w.opts.GOOS == "linux" {
-		if _, err := w.yesNo("allow_dns_recovery", "Restore the last working DNS resolver configuration when name resolution fails", w.cur.AllowDNSRecovery); err != nil {
+		p.explain(p.t("dns_explain"))
+		if _, err := w.yesNo("allow_dns_recovery", p.t("dns_q"), w.cur.AllowDNSRecovery, ptr(true)); err != nil {
 			return err
 		}
 	}
 
 	if !w.explicit("management_interface") {
-		uplink := w.opts.Uplink(ctx, w.cur)
-		if uplink != "" {
-			p.printf("Detected physical uplink: %s\n", uplink)
+		p.explain(p.t("uplink_explain"))
+		if iface, gateway := w.opts.Uplink(ctx, w.cur); iface != "" {
+			shown := iface
+			if gateway != "" {
+				shown = p.t("uplink_gateway", iface, gateway)
+			}
+			p.printf("%s\n", p.t("uplink_detected", p.s.Bold(shown)))
 		}
 		def := w.cur.ManagementInterface
 		if def == "" {
 			def = "auto"
 		}
-		iface, err := p.text("Uplink interface (auto = detect automatically)", def)
+		iface, err := p.text(p.t("uplink_q"), def, "auto", false)
 		if err != nil {
 			return err
 		}
@@ -406,13 +473,13 @@ func (w *wizard) recovery(ctx context.Context) error {
 		w.values["management_interface"] = iface
 	}
 
-	p.printf("Emergency reboot is the last resort when nothing else restores connectivity.\nIt waits for a measured continuous outage and a reboot budget.\n")
-	reboot, err := w.yesNo("enable_reboot", "Allow emergency host reboot", w.cur.EnableReboot)
+	p.explain(p.t("reboot_explain"))
+	reboot, err := w.yesNo("enable_reboot", p.t("reboot_q"), w.cur.EnableReboot, ptr(false))
 	if err != nil {
 		return err
 	}
 	if reboot && !w.explicit("reboot_min_outage_sec") {
-		n, err := p.integer("Minimum continuous outage before reboot, seconds", w.cur.RebootMinOutageSec, 60)
+		n, err := p.integer(p.t("reboot_min_q"), w.cur.RebootMinOutageSec, 60, config.DefaultConfig().RebootMinOutageSec)
 		if err != nil {
 			return err
 		}
@@ -422,20 +489,21 @@ func (w *wizard) recovery(ctx context.Context) error {
 }
 
 func (w *wizard) updates() error {
-	w.section("Updates")
-	w.p.printf("Updates come from %s and are installed only with a valid\nrelease signature, never as a downgrade, and not in observation mode.\n", w.cur.UpdateURL)
-	_, err := w.yesNo("auto_update", "Enable automatic updates", w.cur.AutoUpdate)
+	w.section("sec_updates")
+	w.p.explain(w.p.t("upd_explain", w.cur.UpdateURL))
+	_, err := w.yesNo("auto_update", w.p.t("upd_q"), w.cur.AutoUpdate, ptr(true))
 	return err
 }
 
 func (w *wizard) confirm() error {
+	p := w.p
 	before, _ := w.cur.Values()
 	keys := make([]string, 0, len(w.values))
 	for k := range w.values {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	w.section("Summary")
+	w.section("sec_summary")
 	changes := 0
 	for _, k := range keys {
 		old, now := canon(before[k]), canon(w.values[k])
@@ -443,19 +511,22 @@ func (w *wizard) confirm() error {
 			continue
 		}
 		changes++
-		w.p.printf("  %-28s %s -> %s\n", k, display(old), display(now))
+		p.printf("  %-28s %s -> %s\n", k, p.s.Dim(display(old)), p.s.Green(display(now)))
 	}
 	switch {
+	case !w.existing && changes > 0:
+		p.note(p.t("sum_new_diff"))
 	case !w.existing:
-		w.p.printf("  A new configuration is created with the answers above%s.\n", map[bool]string{true: " (changes from the defaults are listed)", false: ""}[changes > 0])
+		p.note(p.t("sum_new"))
 	case changes == 0:
-		w.p.printf("  No changes to the current settings.\n")
+		p.note(p.t("sum_nochange"))
 	}
-	ok, err := w.p.yesNo("Save these settings", true)
+	ok, err := p.yesNo(p.t("save_q"), true, ptr(true))
 	if err != nil {
 		return err
 	}
 	if !ok {
+		p.warn(p.t("cancelled"))
 		return ErrCancelled
 	}
 	return nil
@@ -531,7 +602,7 @@ func DetectOverlays(goos string) []Detected {
 }
 
 // detectUplink is read-only: the baseline cache is not written.
-func detectUplink(ctx context.Context, cur *config.Config) string {
+func detectUplink(ctx context.Context, cur *config.Config) (string, string) {
 	cfg := *cur
 	cfg.StateDir = ""
 	cfg.ManagementInterface = ""
@@ -539,12 +610,9 @@ func detectUplink(ctx context.Context, cur *config.Config) string {
 	defer cancel()
 	b, err := netengine.NewEngine(&cfg).DetectBaseline(ctx)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	if b.Gateway != "" {
-		return fmt.Sprintf("%s (gateway %s)", b.Interface, b.Gateway)
-	}
-	return b.Interface
+	return b.Interface, b.Gateway
 }
 
 func hasIPv4(i net.Interface) bool {

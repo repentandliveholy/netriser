@@ -18,6 +18,17 @@ Changed
 Configurations without `full_tunnel` keep their behaviour; run `nr setup` to
 choose a mode.
 
+Setup and installers
+- Setup and the installers ask for the language first: English, Russian or
+  French (`language`, `setup --lang`, `NETRISER_LANG`). All questions,
+  explanations and the final summary follow it.
+- Every question explains what it does and why, and shows what Enter selects
+  and whether that is the recommended value or the current setting.
+  `да`/`нет` and `oui`/`non` are accepted as well as `y`/`n`.
+- Colored output in setup, the installers, `nr status`, `nr logs` and
+  `nr live` on terminals (Windows 10+ consoles included); `NO_COLOR=1`
+  disables it.
+
 ## 1.3.1
 
 Changed

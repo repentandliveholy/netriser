@@ -7,22 +7,65 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/repentandliveholy/netriser/internal/i18n"
+	"github.com/repentandliveholy/netriser/internal/term"
 )
 
 // ErrCancelled is returned when the user declines to save or input ends.
 var ErrCancelled = errors.New("setup cancelled; nothing was changed")
 
+const wrapWidth = 78
+
 type prompter struct {
-	r *bufio.Reader
-	w io.Writer
+	r    *bufio.Reader
+	w    io.Writer
+	lang string
+	s    term.Style
+	// existing marks defaults as the current settings rather than new values.
+	existing bool
+	// grouped is set after a heading or help text, so the next help text
+	// continues the group instead of starting with a blank line.
+	grouped bool
 }
+
+func (p *prompter) t(key string, args ...any) string { return i18n.T(p.lang, key, args...) }
 
 func (p *prompter) printf(format string, args ...any) { fmt.Fprintf(p.w, format, args...) }
 
+// explain prints dimmed, wrapped help text before a question.
+func (p *prompter) explain(text string) {
+	if !p.grouped {
+		p.printf("\n")
+	}
+	p.grouped = true
+	for _, l := range wrap(text, wrapWidth-2) {
+		p.printf("  %s\n", p.s.Dim(l))
+	}
+}
+
+// note prints wrapped plain text.
+func (p *prompter) note(text string) {
+	for _, l := range wrap(text, wrapWidth) {
+		p.printf("%s\n", l)
+	}
+}
+
+func (p *prompter) warn(text string) {
+	for _, l := range wrap(text, wrapWidth) {
+		p.printf("%s\n", p.s.Yellow(l))
+	}
+}
+
+// line asks a question. The prompt always ends in "]: ", which the installer
+// tests rely on to detect questions.
 func (p *prompter) line(question, hint string) (string, error) {
-	p.printf("%s [%s]: ", question, hint)
+	p.grouped = false
+	p.printf("%s %s [%s]: ", p.s.Cyan("?"), p.s.Bold(question), p.s.Dim(hint))
 	s, err := p.r.ReadString('\n')
 	if err != nil && (s == "" || !errors.Is(err, io.EOF)) {
 		p.printf("\n")
@@ -31,46 +74,98 @@ func (p *prompter) line(question, hint string) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
-func (p *prompter) yesNo(question string, def bool) (bool, error) {
-	hint := "y/N"
-	if def {
-		hint = "Y/n"
+// enter describes what pressing Enter selects: the recommended value, the
+// current setting, or a plain default, plus the recommendation when the
+// default differs from it.
+func (p *prompter) enter(value string, isRecommended bool, recommended string) string {
+	s := p.t("enter_is", value)
+	switch {
+	case isRecommended:
+		s += " (" + p.t("recommended") + ")"
+	case p.existing:
+		s += " (" + p.t("current") + ")"
 	}
+	if recommended != "" && !isRecommended {
+		s += " · " + p.t("recommended_is", recommended)
+	}
+	return s
+}
+
+func (p *prompter) word(v bool) string {
+	if v {
+		return p.t("yes")
+	}
+	return p.t("no")
+}
+
+// yesNo asks a yes/no question; rec is the recommended answer, if any.
+func (p *prompter) yesNo(question string, def bool, rec *bool) (bool, error) {
+	yn := p.t("yn_default_no")
+	if def {
+		yn = p.t("yn_default_yes")
+	}
+	recommended := ""
+	if rec != nil && *rec != def {
+		recommended = p.word(*rec)
+	}
+	hint := yn + " · " + p.enter(p.word(def), rec != nil && *rec == def, recommended)
 	for {
 		s, err := p.line(question, hint)
 		if err != nil {
 			return false, err
 		}
-		switch strings.ToLower(s) {
-		case "":
+		answer := strings.ToLower(s)
+		switch {
+		case answer == "":
 			return def, nil
-		case "y", "yes":
+		case slices.Contains(i18n.YesWords, answer):
 			return true, nil
-		case "n", "no":
+		case slices.Contains(i18n.NoWords, answer):
 			return false, nil
 		}
-		p.printf("Please answer y or n (or Enter for the default).\n")
+		p.warn(p.t("yesno_retry"))
 	}
 }
 
-// text returns def on Enter.
-func (p *prompter) text(question, def string) (string, error) {
-	hint := "Enter = " + def
-	if def == "" {
-		hint = "Enter = none"
+// text returns def on Enter. rec is the recommended value ("" = none); with
+// required, an empty answer is refused when there is no default.
+func (p *prompter) text(question, def, rec string, required bool) (string, error) {
+	var hint string
+	if def == "" && required {
+		hint = p.t("required")
+	} else {
+		shown := def
+		if shown == "" {
+			shown = p.t("none")
+		}
+		recommended := ""
+		if rec != "" && rec != def {
+			recommended = rec
+		}
+		hint = p.enter(shown, rec != "" && rec == def, recommended)
 	}
-	s, err := p.line(question, hint)
-	if err != nil || s == "" {
-		return def, err
+	for {
+		s, err := p.line(question, hint)
+		if err != nil {
+			return "", err
+		}
+		if s != "" {
+			return s, nil
+		}
+		if def != "" || !required {
+			return def, nil
+		}
 	}
-	return s, nil
 }
 
 // list reads a comma-separated list; Enter keeps def and "-" clears it.
-func (p *prompter) list(question string, def []string) ([]string, error) {
-	hint := "comma separated, Enter = keep " + strings.Join(def, ", ") + ", - = none"
+// emptyRecommended marks an empty list as the recommended answer.
+func (p *prompter) list(question string, def []string, emptyRecommended bool) ([]string, error) {
+	hint := p.t("list_hint") + " · "
 	if len(def) == 0 {
-		hint = "comma separated, Enter = none"
+		hint += p.enter(p.t("none"), emptyRecommended, "")
+	} else {
+		hint += p.enter(p.t("list_keep", strings.Join(def, ", ")), false, "") + " · " + p.t("list_clear")
 	}
 	s, err := p.line(question, hint)
 	if err != nil {
@@ -91,9 +186,15 @@ func (p *prompter) list(question string, def []string) ([]string, error) {
 	return out, nil
 }
 
-func (p *prompter) integer(question string, def, min int) (int, error) {
+// integer asks for a whole number of at least min; rec is the recommended
+// value (0 = none).
+func (p *prompter) integer(question string, def, min, rec int) (int, error) {
+	recText := ""
+	if rec > 0 {
+		recText = strconv.Itoa(rec)
+	}
 	for {
-		s, err := p.text(question, strconv.Itoa(def))
+		s, err := p.text(question, strconv.Itoa(def), recText, false)
 		if err != nil {
 			return 0, err
 		}
@@ -101,8 +202,58 @@ func (p *prompter) integer(question string, def, min int) (int, error) {
 		if err == nil && n >= min {
 			return n, nil
 		}
-		p.printf("Please enter a whole number of at least %d.\n", min)
+		p.warn(p.t("integer_retry", min))
 	}
+}
+
+// chooseLanguage shows the language menu in all languages and returns the
+// chosen code; def is preselected.
+func (p *prompter) chooseLanguage(def string) (string, error) {
+	var items []string
+	defNum := 1
+	for i, code := range i18n.Languages {
+		items = append(items, fmt.Sprintf("%d) %s", i+1, i18n.Names[code]))
+		if code == def {
+			defNum = i + 1
+		}
+	}
+	p.printf("%s\n  %s\n", p.s.Title("Language / Язык / Langue"), strings.Join(items, "   "))
+	hint := fmt.Sprintf("Enter = %d (%s)", defNum, i18n.Names[i18n.Languages[defNum-1]])
+	for {
+		s, err := p.line("Language / Язык / Langue", hint)
+		if err != nil {
+			return "", err
+		}
+		if s == "" {
+			return i18n.Languages[defNum-1], nil
+		}
+		if code := i18n.Normalize(s); code != "" {
+			return code, nil
+		}
+		p.warn("1 = English, 2 = Русский, 3 = Français")
+	}
+}
+
+// wrap breaks text into lines of at most width characters; explicit line
+// breaks are kept.
+func wrap(text string, width int) []string {
+	var out []string
+	for _, para := range strings.Split(text, "\n") {
+		line := ""
+		for _, word := range strings.Fields(para) {
+			switch {
+			case line == "":
+				line = word
+			case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(word) > width:
+				out = append(out, line)
+				line = word
+			default:
+				line += " " + word
+			}
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // Terminal returns the interactive input and output for setup. stdin is used

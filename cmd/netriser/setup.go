@@ -10,8 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/repentandliveholy/netriser/internal/config"
+	"github.com/repentandliveholy/netriser/internal/i18n"
 	"github.com/repentandliveholy/netriser/internal/service"
 	"github.com/repentandliveholy/netriser/internal/setup"
+	"github.com/repentandliveholy/netriser/internal/term"
 )
 
 // runSetup implements `netriser setup`. Installers run it twice: first with
@@ -40,10 +42,15 @@ func runSetup(opts cliOptions) int {
 		}
 	}
 
+	// --lang selects the language of the questions and the result. It is
+	// stored only when it differs from the configured language, so that
+	// installers passing --lang leave existing files otherwise untouched.
 	switch opts.lang {
 	case "":
 	case "en", "ru", "fr":
-		explicit["language"] = opts.lang
+		if cur, _, err := setup.Current(path); err == nil && setup.EffectiveLanguage(cur) != opts.lang {
+			explicit["language"] = opts.lang
+		}
 	default:
 		fmt.Fprintln(os.Stderr, "Invalid --lang: use en, ru or fr.")
 		return 1
@@ -68,7 +75,7 @@ func runSetup(opts cliOptions) int {
 		}
 	} else {
 		interactive := !opts.nonInteractive && os.Getenv("NETRISER_NONINTERACTIVE") != "1"
-		setupOpts := setup.Options{ConfigPath: path, Explicit: explicit}
+		setupOpts := setup.Options{ConfigPath: path, Explicit: explicit, Language: opts.lang}
 		if interactive {
 			in, out, closeTerminal, ok := setup.Terminal()
 			defer closeTerminal()
@@ -108,22 +115,41 @@ func runSetup(opts cliOptions) int {
 		fmt.Fprintln(os.Stderr, "Configuration was not changed:", err)
 		return 1
 	}
-	fmt.Printf("Configuration: %s (%s)\n", path, map[bool]string{true: "updated", false: "unchanged"}[changed])
-	fmt.Printf("Observation mode (no recovery actions): %t\nAutomatic updates: %t\nEmergency reboot: %t\n", cfg.ObservationMode, cfg.AutoUpdate, cfg.EnableReboot)
-	fmt.Printf("Default route: %s\n", config.DefaultRoutePolicy(cfg))
-	if len(cfg.AllowedDefaultInterfaces) > 0 {
-		fmt.Printf("Interfaces allowed to carry the default route: %s\n", strings.Join(cfg.AllowedDefaultInterfaces, ", "))
+	lang := opts.lang
+	if lang == "" {
+		lang = cfg.Language
 	}
-	fmt.Printf("Checks: %ds healthy / %ds during outage\n", cfg.CheckIntervalSec, cfg.RecoveryIntervalSec)
-	fmt.Printf("Log file: %s\nIncident reports: %s\n", cfg.LogFile, cfg.IncidentDir)
+	t := func(key string, args ...any) string { return i18n.T(lang, key, args...) }
+	yesNo := func(v bool) string {
+		if v {
+			return t("yes")
+		}
+		return t("no")
+	}
+	style := term.For(os.Stdout)
+	state := t("res_unchanged")
+	if changed {
+		state = t("res_updated")
+	}
+	fmt.Println(style.Bold(t("res_config", path, state)))
+	fmt.Println(t("res_observation", yesNo(cfg.ObservationMode)))
+	fmt.Println(t("res_autoupdate", yesNo(cfg.AutoUpdate)))
+	fmt.Println(t("res_reboot", yesNo(cfg.EnableReboot)))
+	fmt.Println(t("res_route", routePolicyText(lang, cfg)))
+	if len(cfg.AllowedDefaultInterfaces) > 0 {
+		fmt.Println(t("res_allowed", strings.Join(cfg.AllowedDefaultInterfaces, ", ")))
+	}
+	fmt.Println(t("res_checks", cfg.CheckIntervalSec, cfg.RecoveryIntervalSec))
+	fmt.Println(t("res_log", cfg.LogFile))
+	fmt.Println(t("res_incidents", cfg.IncidentDir))
 	if changed && !opts.noRestart {
 		mgr := service.NewManager(cfg)
 		if state, err := mgr.Status(); err == nil && serviceRunning(state) {
 			if err := mgr.Restart(); err != nil {
-				fmt.Fprintf(os.Stderr, "Settings saved, but the service restart failed: %v\n", err)
+				fmt.Fprintln(os.Stderr, t("res_restart_fail", err))
 				return 1
 			}
-			fmt.Println("Service restarted to apply the new settings.")
+			fmt.Println(style.Green(t("res_restarted")))
 		}
 	}
 	return 0
@@ -132,4 +158,22 @@ func runSetup(opts cliOptions) int {
 func serviceRunning(state string) bool {
 	s := strings.ToLower(state)
 	return (strings.Contains(s, "active") && !strings.Contains(s, "inactive")) || strings.Contains(s, "running")
+}
+
+// routePolicyText is config.DefaultRoutePolicy in the setup language.
+func routePolicyText(lang string, cfg *config.Config) string {
+	switch {
+	case cfg.UplinkOnly():
+		return i18n.T(lang, "policy_uplink")
+	case cfg.FullTunnel == nil:
+		v := i18n.T(lang, "no")
+		if cfg.AllowVPNBypass {
+			v = i18n.T(lang, "yes")
+		}
+		return i18n.T(lang, "policy_unset", v)
+	case cfg.AllowVPNBypass:
+		return i18n.T(lang, "policy_access")
+	default:
+		return i18n.T(lang, "policy_privacy")
+	}
 }

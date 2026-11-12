@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/repentandliveholy/netriser/internal/term"
 )
 
 const defaultLogLines = 50
@@ -123,17 +125,19 @@ func runLogs(path string, args []string) int {
 		fmt.Fprintf(os.Stderr, "Cannot read log: %v\n", err)
 		return 1
 	}
+	style := term.For(os.Stdout)
 	for _, l := range lines {
-		fmt.Println(l)
+		fmt.Println(colorLogLine(style, l))
 	}
 	return 0
 }
 
 // runLive shows the last lines for context, then streams new ones until Ctrl+C.
 func runLive(path string) int {
+	style := term.For(os.Stdout)
 	if lines, err := recentLogLines(path, 10); err == nil {
 		for _, l := range lines {
-			fmt.Println(l)
+			fmt.Println(colorLogLine(style, l))
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(os.Stderr, "Cannot read log: %v\n", err)
@@ -142,9 +146,31 @@ func runLive(path string) int {
 	fmt.Fprintf(os.Stderr, "-- following %s (Ctrl+C to stop) --\n", path)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := followLog(ctx, path, os.Stdout, 500*time.Millisecond); err != nil {
+	if err := followLog(ctx, path, lineColorer{os.Stdout, style}, 500*time.Millisecond); err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot follow log: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// lineColorer colors complete lines written by followLog.
+type lineColorer struct {
+	w     io.Writer
+	style term.Style
+}
+
+func (c lineColorer) Write(p []byte) (int, error) {
+	if !c.style.On {
+		return c.w.Write(p)
+	}
+	text := strings.TrimSuffix(string(p), "\n")
+	var b strings.Builder
+	for _, l := range strings.Split(text, "\n") {
+		b.WriteString(colorLogLine(c.style, l))
+		b.WriteString("\n")
+	}
+	if _, err := io.WriteString(c.w, b.String()); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

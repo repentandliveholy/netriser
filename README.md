@@ -58,18 +58,27 @@ settings except those selected by the variables.
 
 `netriser setup` (alias `nr setup`) asks the installation questions and applies
 the answers. Run it at any time to change them; it restarts a running service
-when something changed. The questions cover:
+when something changed.
+
+The first question chooses the language of the questions: English, Русский or
+Français (stored as `language`; the installers ask it too, or take
+`NETRISER_LANG=en|ru|fr`). Every question explains what it does and shows what
+Enter selects, for example `[Y/n · Enter = yes (recommended)]` or
+`[Enter = no (current) · recommended: yes]`. Answers `y`/`n` work in every
+language, as do `да`/`нет` and `oui`/`non`. Output is colored on terminals;
+set `NO_COLOR=1` to disable colors. The questions cover:
 
 1. **Observation mode**: read-only operation that records incidents and planned
    actions without changing anything. New installations start here.
 2. **Connectivity probes**: the internet probes are tested live; if this network
    blocks them, enter targets it can reach. Optional mesh/VPN endpoints are
    monitored separately.
-3. **VPNs and overlays**: the interfaces present on the host are listed. Hosts
-   that deliberately route all traffic through a VPN or exit node name that
-   interface (`allowed_default_interfaces`). A separate question decides
-   whether NetRiser may bypass a full-tunnel VPN that cut the host off
-   (`allow_vpn_bypass`, default no). Unrecognised VPNs can be described.
+3. **VPNs and overlays**: the interfaces present on the host are listed. The
+   full-tunnel answer (`full_tunnel`) selects the mode described under
+   [VPNs and overlays](#vpns-and-overlays); hosts with a full tunnel name the
+   interfaces that carry it (`allowed_default_interfaces`) and choose whether
+   access or keeping traffic in the VPN comes first (`allow_vpn_bypass`).
+   Unrecognised VPNs can be described.
 4. **Recovery actions**: route cleanup, overlay quarantine, network restart,
    DNS recovery (Linux), and the uplink interface (or auto-detection).
 5. **Emergency reboot** and the minimum outage before it.

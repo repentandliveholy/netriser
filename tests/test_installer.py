@@ -16,6 +16,12 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 
 
+def binary_supports_lang():
+    """The language is stored by the binary itself; the stored-config assertions
+    only apply when this checkout's binary implements setup --lang."""
+    return any("--lang=" in f.read_text() for f in (REPO / "cmd/netriser").glob("*.go"))
+
+
 class InstallerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -47,8 +53,10 @@ class InstallerTests(unittest.TestCase):
         self.installer.write_text(script)
         self.env = dict(os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
                         NETRISER_NONINTERACTIVE="1", NETRISER_URL="https://installer.invalid")
-        for key in ("CONF_FILE", "NETRISER_AUTO_UPDATE", "NETRISER_ENABLE_REBOOT", "NETRISER_OBSERVATION_MODE"):
+        for key in ("CONF_FILE", "NETRISER_AUTO_UPDATE", "NETRISER_ENABLE_REBOOT", "NETRISER_OBSERVATION_MODE",
+                    "NETRISER_LANG", "NO_COLOR"):
             self.env.pop(key, None)
+        self.env["TERM"] = "xterm"
         self.command("id", "echo 0\n")
         self.command("uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
         self.command("systemctl", '''
@@ -73,6 +81,7 @@ cp "$TEST_DIST/$filename" "$destination"
         # version commands execute the application and strict YAML validation.
         self.asset = self.dist / "netriser-linux-amd64"
         self.asset.write_text('''#!/usr/bin/env sh
+printf '%s\\n' "$*" >>"$TEST_ROOT/args.log"
 case " $* " in
   *" migrate "*) exit 0 ;;
   *" service install "*|*" service restart "*)
@@ -108,10 +117,10 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
             self.assertIn(line, config)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertIn("[8/8]", result.stdout)
-        self.assertIn("Observation mode (no recovery actions): true", result.stdout)
+        self.assertIn("Observation mode (no recovery actions): yes", result.stdout)
         self.assertIn("Enable recovery with: nr observe off", result.stdout)
-        self.assertIn("Automatic updates: true", result.stdout)
-        self.assertIn("Emergency reboot: false", result.stdout)
+        self.assertIn("Automatic updates: yes", result.stdout)
+        self.assertIn("Emergency reboot: no", result.stdout)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES"):
             self.assertEqual((self.root / "usr/local/share/doc/netriser" / name).read_bytes(), (REPO / name).read_bytes())
 
@@ -172,6 +181,19 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         self.assertEqual((license_dir / "LICENSE").read_text(), "previous license\n")
         self.assertFalse((license_dir / "THIRD_PARTY_NOTICES").exists())
 
+    def binary_args(self):
+        """Command lines the downloaded binary was started with."""
+        log = self.root / "args.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def assert_lang_passed(self, code):
+        calls = [line for line in self.binary_args() if " setup " in f" {line} "]
+        self.assertEqual(len(calls), 2, calls)  # --save-answers, then --answers
+        self.assertIn("--save-answers=", calls[0])
+        self.assertIn("--answers=", calls[1])
+        for line in calls:
+            self.assertIn(f"--lang={code}", line)
+
     def run_terminal(self, answers):
         """Run the piped installer on a pseudo-terminal and answer each prompt.
         answers maps a prompt fragment to a reply; other prompts get Enter."""
@@ -201,6 +223,8 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
                         break
                     prompt = output[answered_upto:end].splitlines()[-1]
                     reply = next((r for fragment, r in answers.items() if fragment in prompt), "")
+                    if isinstance(reply, list):  # one reply per time this prompt is shown
+                        reply = reply.pop(0) if reply else ""
                     asked.append(prompt)
                     os.write(fd, reply.encode() + b"\n")
                     answered_upto = end + 3
@@ -243,6 +267,100 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         self.assertIn("nothing was changed", output)
         self.assertEqual(self.config.read_text(), initial)
         self.assertFalse((self.root / "usr/local/sbin/netriser").exists())
+
+    def test_choosing_russian_translates_installer_and_passes_lang(self):
+        code, output, asked = self.run_terminal({"Language / ": "2"})
+        self.assertEqual(code, 0, output)
+        self.assertTrue(any(a.startswith("Language / Язык / Langue") and a.endswith("[Enter = 1 (English)") for a in asked), asked)
+        for text in ("[1/8] Установка NetRiser", "[8/8] Запускаю NetRiser", "NetRiser установлен и запущен.",
+                     "Полезные команды:", "nr observe on|off|status", "nr autoupdate on|off|status",
+                     "nr reboot on|off|status", "nr setup"):
+            self.assertIn(text, output)
+        self.assertNotIn("Installing NetRiser", output)
+        self.assert_lang_passed("ru")
+        if binary_supports_lang():
+            self.assertIn("language: ru", self.config.read_text())
+
+    def test_language_prompt_rejects_invalid_answers_and_accepts_names(self):
+        code, output, asked = self.run_terminal({"Language / ": ["9", "FR"]})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len([a for a in asked if "Language / " in a]), 2, asked)
+        self.assertIn("Saisissez 1, 2 ou 3", output)
+        self.assertIn("NetRiser est installé et en cours d'exécution.", output)
+        self.assert_lang_passed("fr")
+
+    @unittest.skipUnless(binary_supports_lang(), "needs a binary that stores the language")
+    def test_existing_config_language_is_the_prompt_default(self):
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text("language: ru\n")
+        code, output, asked = self.run_terminal({})
+        self.assertEqual(code, 0, output)
+        self.assertTrue(any("[Enter = 2 (Русский)" in a for a in asked), asked)
+        self.assertIn("NetRiser установлен и запущен.", output)
+        self.assert_lang_passed("ru")
+
+    def test_env_language_skips_the_prompt_and_uses_french(self):
+        self.env["NETRISER_LANG"] = "fr"
+        result = self.run_pipe()  # NETRISER_NONINTERACTIVE=1
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for text in ("[1/8] Installation de NetRiser", "Téléchargement du programme", "[8/8] Démarrage de NetRiser",
+                     "NetRiser est installé et en cours d'exécution.", "Commandes utiles :", "nr setup"):
+            self.assertIn(text, result.stdout)
+        self.assertNotIn("Language /", result.stdout)
+        self.assert_lang_passed("fr")
+        if binary_supports_lang():
+            self.assertIn("language: fr", self.config.read_text())
+        # An interactive run with NETRISER_LANG set does not ask either.
+        (self.root / "args.log").unlink()
+        code, output, asked = self.run_terminal({})
+        self.assertEqual(code, 0, output)
+        self.assertFalse(any("Language / " in a for a in asked), asked)
+        self.assertIn("NetRiser est installé", output)
+
+    def test_invalid_env_language_is_rejected_before_any_change(self):
+        self.env["NETRISER_LANG"] = "de"
+        result = self.run_pipe()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NETRISER_LANG", result.stderr)
+        self.assertFalse((self.root / "usr/local/sbin/netriser").exists())
+
+    def test_default_is_english_without_a_terminal(self):
+        result = self.run_pipe()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("NetRiser is installed and running.", result.stdout)
+        self.assertIn("Useful commands:", result.stdout)
+        self.assert_lang_passed("en")
+
+    def test_failed_install_reports_rollback_in_the_chosen_language(self):
+        self.env.update(TEST_FAIL_SERVICE="1", NETRISER_LANG="ru")
+        result = self.run_pipe()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Установка NetRiser не удалась", result.stderr)
+        self.assertIn("Прежнее состояние восстановлено.", result.stderr)
+
+    def test_no_color_when_disabled_or_not_a_terminal(self):
+        # Piped output is not a terminal: no escape sequences at all.
+        result = self.run_pipe()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("\x1b[", result.stdout + result.stderr)
+        # NO_COLOR disables colors even on a terminal.
+        self.env["NO_COLOR"] = "1"
+        code, output, _ = self.run_terminal({})
+        self.assertEqual(code, 0, output)
+        self.assertIn("[8/8]", output)
+        self.assertNotIn("\x1b[", output)
+        # So does TERM=dumb.
+        del self.env["NO_COLOR"]
+        self.env["TERM"] = "dumb"
+        code, output, _ = self.run_terminal({})
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("\x1b[", output)
+
+    def test_colors_on_a_terminal(self):
+        code, output, _ = self.run_terminal({})
+        self.assertEqual(code, 0, output)
+        self.assertIn("\x1b[1;36m[1/8]", output)  # step headers: bold cyan
+        self.assertIn("\x1b[32mNetRiser is installed and running.", output)  # success: green
 
 
 if __name__ == "__main__":

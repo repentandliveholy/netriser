@@ -12,6 +12,7 @@ import (
 
 	"github.com/repentandliveholy/netriser/internal/config"
 	"github.com/repentandliveholy/netriser/internal/service"
+	"github.com/repentandliveholy/netriser/internal/term"
 	"github.com/repentandliveholy/netriser/internal/updater"
 	"github.com/repentandliveholy/netriser/internal/watchdog"
 )
@@ -404,7 +405,7 @@ func main() {
 			}
 			fmt.Println(jsonStr)
 		} else {
-			fmt.Print(w.Status(ctx))
+			fmt.Print(colorStatus(term.For(os.Stdout), w.Status(ctx)))
 		}
 
 	case "diagnose":

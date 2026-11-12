@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/repentandliveholy/netriser/internal/canary"
 	"github.com/repentandliveholy/netriser/internal/config"
 	"github.com/repentandliveholy/netriser/internal/netengine"
+	"github.com/repentandliveholy/netriser/internal/term"
 )
 
 func stubOpts(path, input string, probeOK bool) (Options, *bytes.Buffer) {
@@ -28,7 +30,8 @@ func stubOpts(path, input string, probeOK bool) (Options, *bytes.Buffer) {
 		Detect: func() []Detected {
 			return []Detected{{"wg0", "WireGuard", netengine.KindVPN}, {"tailscale0", "Tailscale", netengine.KindMesh}}
 		},
-		Uplink: func(context.Context, *config.Config) string { return "eth0 (gateway 192.0.2.1)" },
+		Uplink:   func(context.Context, *config.Config) (string, string) { return "eth0", "192.0.2.1" },
+		Explicit: map[string]any{"language": "en"},
 	}, out
 }
 
@@ -48,7 +51,7 @@ func TestFreshSetupDefaultsAreSafe(t *testing.T) {
 		t.Fatalf("unsafe defaults: %+v", cfg)
 	}
 	text := out.String()
-	for _, want := range []string{"netriser setup", "wg0", "WireGuard (vpn)", "tailscale0", "Detected physical uplink: eth0", "Summary"} {
+	for _, want := range []string{"netriser setup", "wg0", "WireGuard (VPN)", "tailscale0", "Detected physical uplink: eth0", "Summary"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output lacks %q:\n%s", want, text)
 		}
@@ -182,5 +185,87 @@ func TestSetupWithoutFullTunnelSkipsBypassQuestion(t *testing.T) {
 	text := out.String()
 	if strings.Contains(text, "more important than keeping all traffic") || !strings.Contains(text, "removed immediately, even while") {
 		t.Fatalf("wrong questions for a host without a full tunnel:\n%s", text)
+	}
+}
+
+// The language menu comes first; the chosen language is used for every
+// question and stored in the configuration.
+func TestSetupAsksLanguageFirstAndUsesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	opts, out := stubOpts(path, "2\n"+strings.Repeat("\n", 40), true)
+	opts.Explicit = nil
+	values, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	cfg, _, err := config.Apply(path, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if cfg.Language != "ru" || !strings.HasPrefix(text, "Language / Язык / Langue") ||
+		!strings.Contains(text, "Начать в режиме наблюдения") || !strings.Contains(text, "Enter = да (рекомендуется)") ||
+		strings.Contains(text, "Start in observation") {
+		t.Fatalf("language not applied (language=%q):\n%s", cfg.Language, text)
+	}
+
+	// Rerun: the stored language is preselected.
+	opts, out = stubOpts(path, strings.Repeat("\n", 40), true)
+	opts.Explicit = nil
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Enter = 2 (Русский)") || !strings.Contains(out.String(), "текущее") {
+		t.Fatalf("stored language not preselected:\n%s", out)
+	}
+}
+
+func TestPromptHints(t *testing.T) {
+	out := &bytes.Buffer{}
+	p := &prompter{r: bufio.NewReader(strings.NewReader("\n\n\n\nmaybe\nда\n")), w: out, lang: "en"}
+	p.yesNo("Q1", true, ptr(true))
+	p.existing = true
+	p.yesNo("Q2", false, ptr(true))
+	p.text("Q3", "auto", "auto", false)
+	p.list("Q4", nil, true)
+	if v, _ := p.yesNo("Q5", false, nil); !v {
+		t.Fatal("Russian yes not accepted")
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Q1 [Y/n · Enter = yes (recommended)]: ",
+		"Q2 [y/N · Enter = no (current) · recommended: yes]: ",
+		"Q3 [Enter = auto (recommended)]: ",
+		"Q4 [comma separated · Enter = none (recommended)]: ",
+		"Please answer y or n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\x1b[") {
+		t.Error("colors written to a non-terminal")
+	}
+}
+
+func TestColoredPromptKeepsQuestionTerminator(t *testing.T) {
+	out := &bytes.Buffer{}
+	p := &prompter{r: bufio.NewReader(strings.NewReader("\n")), w: out, lang: "fr", s: term.Style{On: true}}
+	p.yesNo("Activer", true, ptr(true))
+	text := out.String()
+	if !strings.Contains(text, "\x1b[") || !strings.Contains(text, "]: ") || !strings.Contains(text, "Entrée = oui (recommandé)") {
+		t.Fatalf("unexpected colored prompt: %q", text)
+	}
+}
+
+func TestWrapKeepsWordsAndWidth(t *testing.T) {
+	lines := wrap("Полный туннель — это когда машина намеренно отправляет весь свой интернет-трафик через VPN.", 30)
+	for _, l := range lines {
+		if n := len([]rune(l)); n > 30 {
+			t.Errorf("line too long (%d): %q", n, l)
+		}
+	}
+	if strings.Join(lines, " ") != "Полный туннель — это когда машина намеренно отправляет весь свой интернет-трафик через VPN." {
+		t.Fatalf("words changed: %q", lines)
 	}
 }

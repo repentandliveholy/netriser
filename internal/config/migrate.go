@@ -14,7 +14,8 @@ import (
 // It must be run with the legacy daemon stopped. Explicit configurations are
 // updated in place; otherwise the old default configuration is copied to the
 // new default location. Existing canonical configurations are never overwritten.
-func MigrateLegacy(explicit string) error {
+// It reports whether a legacy configuration or state was found and migrated.
+func MigrateLegacy(explicit string) (bool, error) {
 	if explicit == "" {
 		explicit = os.Getenv("CONF_FILE")
 	}
@@ -24,37 +25,37 @@ func MigrateLegacy(explicit string) error {
 
 // Retaining legacy paths deliberately keeps reboot budgets, caches, quarantine
 // records and the shared lock intact without moving or overwriting state.
-func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]string) error {
+func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]string) (bool, error) {
 	target := explicit
 	source := explicit
 	if target == "" {
 		target, source = defaultTarget, oldConfig
 		if _, err := os.Stat(target); err == nil {
-			return nil
+			return false, nil
 		} else if !os.IsNotExist(err) {
-			return err
+			return false, err
 		}
 	}
 	data, err := os.ReadFile(source)
 	if os.IsNotExist(err) && explicit == "" {
 		if _, stateErr := os.Stat(legacy["state_dir"]); os.IsNotExist(stateErr) {
-			return nil
+			return false, nil
 		} else if stateErr != nil {
-			return stateErr
+			return false, stateErr
 		}
 		data = []byte("{}\n")
 	} else if err != nil {
-		return fmt.Errorf("read legacy configuration: %w", err)
+		return false, fmt.Errorf("read legacy configuration: %w", err)
 	}
 	// Validate before modifying the file; this also rejects unknown settings.
 	if len(data) > 0 && !(explicit == "" && bytes.Equal(data, []byte("{}\n"))) {
 		if _, err := Load(source); err != nil {
-			return err
+			return false, err
 		}
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &doc); err != nil {
-		return err
+		return false, err
 	}
 	if len(doc.Content) == 0 {
 		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
@@ -62,7 +63,7 @@ func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("legacy configuration must be a mapping")
+		return false, fmt.Errorf("legacy configuration must be a mapping")
 	}
 	present := map[string]bool{}
 	for i := 0; i+1 < len(root.Content); i += 2 {
@@ -80,31 +81,31 @@ func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]
 	root.Style = 0
 	output, err := yaml.Marshal(&doc)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err = os.MkdirAll(filepath.Dir(target), 0750); err != nil {
-		return err
+		return false, err
 	}
 	if explicit == "" {
 		f, e := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if e != nil {
-			return e
+			return false, e
 		}
 		_, e = f.Write(output)
 		ce := f.Close()
 		if e != nil {
 			_ = os.Remove(target)
-			return e
+			return false, e
 		}
-		return ce
+		return ce == nil, ce
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return err
+		return false, err
 	}
 	f, err := os.CreateTemp(filepath.Dir(target), ".netriser-migrate-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
@@ -115,9 +116,10 @@ func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]
 		err = e
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	return os.Rename(tmp, target)
+	err = os.Rename(tmp, target)
+	return err == nil, err
 }
 
 func legacyDefaults() (map[string]string, string) {

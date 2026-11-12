@@ -180,11 +180,16 @@ func main() {
 	}
 
 	if cmd == "migrate" {
-		if err := config.MigrateLegacy(opts.confPath); err != nil {
+		migrated, err := config.MigrateLegacy(opts.confPath)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("Legacy configuration preserved. Install the NetRiser service after stopping the legacy daemon.")
+		if migrated {
+			fmt.Println("Legacy mesh-watchdog configuration and state paths preserved.")
+		} else {
+			fmt.Println("No legacy configuration to migrate.")
+		}
 		return
 	}
 	if cmd == "setup" || cmd == "configure" {

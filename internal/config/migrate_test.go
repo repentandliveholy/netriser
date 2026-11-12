@@ -14,7 +14,7 @@ func TestMigrateExplicitPreservesSettingsAndStatePath(t *testing.T) {
 	if err := os.WriteFile(path, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MigrateLegacy(path); err != nil {
+	if _, err := MigrateLegacy(path); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -29,7 +29,7 @@ func TestMigrateExplicitPreservesSettingsAndStatePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = MigrateLegacy(path); err != nil {
+	if _, err = MigrateLegacy(path); err != nil {
 		t.Fatal(err)
 	}
 	second, err := os.ReadFile(path)
@@ -47,7 +47,7 @@ func TestMigrateRejectsInvalidConfigWithoutChangingIt(t *testing.T) {
 	if err := os.WriteFile(path, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MigrateLegacy(path); err == nil {
+	if _, err := MigrateLegacy(path); err == nil {
 		t.Fatal("expected validation failure")
 	}
 	data, err := os.ReadFile(path)
@@ -69,7 +69,7 @@ func TestMigrateUpdaterURL(t *testing.T) {
 			if err := os.WriteFile(path, []byte("update_url: "+tt.input+"\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := MigrateLegacy(path); err != nil {
+			if _, err := MigrateLegacy(path); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -97,8 +97,8 @@ func TestMigrateDefaultWithoutConfigRetainsLegacyState(t *testing.T) {
 	old["state_dir"] = state
 	target := filepath.Join(dir, "new", "config.yaml")
 	source := filepath.Join(dir, "old", "config.yaml")
-	if err := migrateLegacy("", target, source, old); err != nil {
-		t.Fatal(err)
+	if migrated, err := migrateLegacy("", target, source, old); err != nil || !migrated {
+		t.Fatalf("migrated=%v err=%v", migrated, err)
 	}
 	cfg, err := Load(target)
 	if err != nil {
@@ -114,8 +114,8 @@ func TestMigrateDefaultWithoutConfigRetainsLegacyState(t *testing.T) {
 	if err := os.WriteFile(target, []byte("auto_update: false\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrateLegacy("", target, source, old); err != nil {
-		t.Fatal(err)
+	if migrated, err := migrateLegacy("", target, source, old); err != nil || migrated {
+		t.Fatalf("migrated=%v err=%v", migrated, err)
 	}
 	data, err = os.ReadFile(target)
 	if err != nil || string(data) != "auto_update: false\n" {
@@ -132,7 +132,7 @@ func TestMigrateDefaultCopiesLegacySettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	old, _ := legacyDefaults()
-	if err := migrateLegacy("", target, source, old); err != nil {
+	if _, err := migrateLegacy("", target, source, old); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(target)

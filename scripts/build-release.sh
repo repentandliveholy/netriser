@@ -40,10 +40,8 @@ export VERSION COMMIT BUILD_TIME
 ./build.sh
 cp bin/netriser-* "$DIST_BIN/"
 
-# The legacy hostname is served from its existing distribution root and is
-# preserved independently during the fleet transition. Do not place v1.2
-# binaries under old names in the canonical package: old manifests verify
-# checksums for the historical 1.1 binaries.
+# The retired mesh-watchdog hostname only redirects every path to this
+# server (since 2026-11-12); nothing is published there.
 
 cp scripts/install.sh "$DIST_DIR/install.sh"
 cp scripts/install.ps1 "$DIST_DIR/install.ps1"

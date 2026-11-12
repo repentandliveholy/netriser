@@ -32,6 +32,16 @@ Mesh Watchdog paths
   Empty Mesh Watchdog directories are removed.
 - `nr migrate` reports a migration only when it changed something.
 
+Windows recovery
+- The address of the physical adapter is read from the system directly, not
+  only through PowerShell. In a test on 2026-11-12 a WireGuard tunnel took
+  the default route; the PowerShell query came back without a usable
+  address, the uplink counted as unknown, stages 1 and 2 were skipped, and
+  the tunnel was stopped only at stage 4 after 2 min 45 s instead of about
+  15 s. PowerShell remains a fallback and its output is read line by line.
+- A failed adapter restart (stage 3) logs what PowerShell reported instead of
+  only "exit status 1".
+
 Windows installer
 - Over SSH or with output redirected to a file, Russian and French messages
   were unreadable (Windows PowerShell wrote them in the OEM code page, e.g.

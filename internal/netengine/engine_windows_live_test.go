@@ -31,3 +31,22 @@ func TestLiveWindowsDefaultRoutesScript(t *testing.T) {
 	}
 	t.Logf("rogue: %+v", WindowsRogueRoutes(routes, config.DefaultConfig()))
 }
+
+// Read-only check of baseline detection on a real host (the saved baseline
+// goes to a temporary directory); run with NETRISER_LIVE_POWERSHELL=1.
+func TestLiveWindowsDetectBaseline(t *testing.T) {
+	if os.Getenv("NETRISER_LIVE_POWERSHELL") != "1" {
+		t.Skip("set NETRISER_LIVE_POWERSHELL=1 to detect this host's uplink")
+	}
+	cfg := config.DefaultConfig()
+	cfg.StateDir = t.TempDir()
+	e := &WindowsEngine{cfg: cfg, runner: &DefaultCommandRunner{}}
+	b, err := e.DetectBaseline(context.Background())
+	t.Logf("baseline: %+v", b)
+	if err != nil || !b.IsValid() {
+		t.Fatalf("baseline not detected: %v", err)
+	}
+	if ip := interfaceIPv4(b.Interface); ip != b.IP {
+		t.Fatalf("system API gives %q for %s, baseline has %q", ip, b.Interface, b.IP)
+	}
+}

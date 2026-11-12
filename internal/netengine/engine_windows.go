@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -239,13 +238,18 @@ Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction Sil
 		b.Interface = strings.TrimSpace(aliasOut)
 	}
 
-	// Detect current IP for chosen InterfaceAlias if unset
+	// Detect current IP for chosen InterfaceAlias if unset. The system API
+	// answers at once and needs no PowerShell: during an outage a PowerShell
+	// call came back without a usable address (2026-11-12, a WireGuard tunnel
+	// holding the default route), which made the baseline invalid and skipped
+	// stages 1 and 2. PowerShell stays as a fallback.
 	if b.Interface != "" && b.IP == "" {
-		ipScript := fmt.Sprintf(`(Get-NetIPAddress -InterfaceAlias '%s' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress`, b.Interface)
-		ipOut, _ := e.runPowerShell(ctx, 3*time.Second, ipScript)
-		if ipOut != "" && net.ParseIP(ipOut) != nil {
-			b.IP = ipOut
-		}
+		b.IP = interfaceIPv4(b.Interface)
+	}
+	if b.Interface != "" && b.IP == "" {
+		ipScript := fmt.Sprintf(`(Get-NetIPAddress -InterfaceAlias %s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress`, psQuote(b.Interface))
+		ipOut, _ := e.runPowerShell(ctx, 5*time.Second, ipScript)
+		b.IP = firstIPv4Line(ipOut)
 	}
 
 	if b.Gateway == "" && saved.Gateway != "" {
@@ -472,7 +476,7 @@ func (e *WindowsEngine) RestartNetworkStack(ctx context.Context, b Baseline) err
 	}
 	out, err := e.runPowerShell(ctx, 40*time.Second, windowsUplinkRecoveryScript(b.Interface))
 	if err != nil {
-		return fmt.Errorf("recover adapter %s: %w", b.Interface, err)
+		return fmt.Errorf("recover adapter %s: %w%s", b.Interface, err, commandDetail(out))
 	}
 	if strings.Contains(out, "MISSING") {
 		return fmt.Errorf("adapter %s not found", b.Interface)

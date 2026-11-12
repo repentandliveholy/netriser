@@ -234,6 +234,13 @@ outage: after the restart, checks and stages 1-3 run again, and if access
 still does not return it stops acting and only keeps checking until
 connectivity returns (`nr status` shows "Recovery Paused").
 
+Blocked probes are told apart from a missing internet: if the internet probes
+fail but the system resolver still resolves `dns_canaries` and the router
+answers ping, the probe addresses are probably blocked on this network (a
+national firewall, a corporate filter). Stages 1-2 still run, but network
+restart and reboot are held back; NetRiser logs it, suggests replacing
+`canary_targets`, and `nr status` shows "Internet Probes: look BLOCKED".
+
 ## DNS recovery
 
 DNS failures are detected separately from loss of IP connectivity. On Linux,

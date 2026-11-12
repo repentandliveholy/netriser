@@ -56,12 +56,13 @@ type Checker struct {
 	cfg        *config.Config
 	httpClient *http.Client
 	lookupHost func(context.Context, string) ([]string, error)
+	pingHost   func(context.Context, string) error
 }
 
 // NewChecker creates a new Checker from config.
 func NewChecker(cfg *config.Config) *Checker {
 	timeout := cfg.ProbeTimeout()
-	return &Checker{
+	c := &Checker{
 		cfg:        cfg,
 		lookupHost: systemLookupHost,
 		httpClient: &http.Client{
@@ -80,6 +81,8 @@ func NewChecker(cfg *config.Config) *Checker {
 			},
 		},
 	}
+	c.pingHost = c.systemPing
+	return c
 }
 
 // SetHTTPClient sets custom HTTP client (useful for unit tests and mocks).

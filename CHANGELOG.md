@@ -20,6 +20,16 @@ Access check
   was probed on port 53, and fast checks cancelled these probes as soon as
   the internet answered, so they often reported a false failure.
 
+Blocked probes
+- When the internet probes fail but the system resolver still resolves
+  `dns_canaries` and the router answers ping, the probe addresses are
+  probably blocked on this network (a national firewall, a corporate filter)
+  rather than the internet being down. Stages 1-2 still run; network restart
+  and the emergency reboot are held back, and NetRiser only logs and suggests
+  replacing `canary_targets`. `nr status` shows "Internet Probes: look
+  BLOCKED"; `nr check --dry-run` reports it too. Without `dns_canaries` or a
+  known gateway escalation is unchanged.
+
 Setup
 - Numbered sections and questions; yes/no and the language are chosen in a
   highlighted menu (arrows, Tab or y/n, then Enter).
@@ -27,6 +37,9 @@ Setup
   previous or default value of changed ones.
 - The access check question follows the full-tunnel answers and explains
   what happens on access loss in the chosen mode.
+- The full-tunnel question says to answer yes when the VPN is needed to reach
+  the internet at all or to get around blocking: with no, such a VPN is
+  removed as soon as it takes over the traffic.
 
 Fixed
 - The retired mesh-watchdog update host is never used; setup moves

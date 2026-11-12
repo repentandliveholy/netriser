@@ -44,6 +44,10 @@ type WatchdogState struct {
 	// then only keeps checking.
 	RebootedInOutage bool `json:"rebooted_in_outage,omitempty"`
 	RecoveryPaused   bool `json:"recovery_paused,omitempty"`
+	// ProbesBlocked is set while the internet probes fail but system DNS and
+	// the router answer: strong actions are held back until connectivity
+	// returns.
+	ProbesBlocked bool `json:"probes_blocked,omitempty"`
 	// AccessFailCount counts consecutive checks in which the internet worked
 	// but no access address answered; AccessActed marks that recovery has
 	// acted on this access loss.

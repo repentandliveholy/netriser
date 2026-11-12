@@ -162,7 +162,7 @@ func (w *Watchdog) writeFailCount(count int) error {
 		state.LastFailedAt = w.clock.Now()
 	} else {
 		state.FirstFailedAt = time.Time{}
-		state.RebootedInOutage, state.RecoveryPaused = false, false
+		state.RebootedInOutage, state.RecoveryPaused, state.ProbesBlocked = false, false, false
 	}
 	state.FailCount = count
 	return w.stateMgr.SaveState(state)
@@ -504,6 +504,14 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 		report.StageReason = decision.SkipReason
 	}
 
+	if decision.Stage >= 3 {
+		if blocked, why := w.probesBlocked(ctx, canaryResult, baseline); blocked {
+			w.holdForBlockedProbes(state, why)
+			report.StageReason = "internet probes look blocked (" + why + "); network restart and reboot held back"
+			return report, nil
+		}
+	}
+
 	if decision.Stage == 4 && state.RebootedInOutage {
 		// The reboot and another round of stages 1-3 did not restore access:
 		// stop acting and keep checking until connectivity returns.
@@ -685,6 +693,33 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 	}
 
 	return report, nil
+}
+
+// probesBlocked reports whether the failing internet probes look filtered
+// while the network itself works (see canary.Checker.ProbesBlocked).
+// It applies only when internet probes are configured and they failed.
+func (w *Watchdog) probesBlocked(ctx context.Context, res canary.HealthResult, baseline netengine.Baseline) (bool, string) {
+	pf, ok := w.checker.(probeFilterChecker)
+	if !ok || res.InternetHealthy || (len(w.cfg.CanaryTargets) == 0 && w.cfg.HTTPFallbackURL == "") {
+		return false, ""
+	}
+	return pf.ProbesBlocked(ctx, baseline.Gateway)
+}
+
+// holdForBlockedProbes logs that strong actions are held back; the full
+// explanation once per outage, a short line on later checks.
+func (w *Watchdog) holdForBlockedProbes(state *WatchdogState, why string) {
+	if state.ProbesBlocked {
+		w.logger.Recovery("Internet probes still do not answer, but %s. Network restart and reboot stay held back.", why)
+		return
+	}
+	w.logger.Warn("The internet probes (canary_targets, http_fallback_url) do not answer, but %s. The network works; the probe addresses are probably blocked on this network. NetRiser does not restart the network or reboot for this and only keeps checking. Replace canary_targets with addresses that answer from this network: run `nr setup` or edit the configuration file.", why)
+	if fresh, _ := w.stateMgr.LoadState(); fresh != nil {
+		fresh.ProbesBlocked = true
+		if err := w.stateMgr.SaveState(fresh); err != nil {
+			w.logger.Error("Failed to record blocked probes in state: %v", err)
+		}
+	}
 }
 
 // keepStopped reports whether a stopped service must not be restarted: a
@@ -896,6 +931,7 @@ type StatusReport struct {
 	RebootBudget24h       int                       `json:"reboot_budget_24h"`
 	RecentReboots24h      int                       `json:"recent_reboots_24h"`
 	RecoveryPaused        bool                      `json:"recovery_paused,omitempty"`
+	ProbesBlocked         bool                      `json:"probes_blocked,omitempty"`
 	AccessChecked         bool                      `json:"access_checked,omitempty"`
 	AccessOK              bool                      `json:"access_ok,omitempty"`
 	ObservationMode       bool                      `json:"observation_mode"`
@@ -963,6 +999,7 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		ObservationMode:       w.cfg.ObservationMode,
 		ConsecutiveFailures:   fails,
 		RecoveryPaused:        state != nil && state.RecoveryPaused,
+		ProbesBlocked:         state != nil && state.ProbesBlocked,
 		AccessChecked:         canaryRes.AccessChecked,
 		AccessOK:              canaryRes.MeshHealthy,
 		QuarantinedServices:   quarantined,
@@ -1015,6 +1052,9 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	}
 	if rep.RecoveryPaused {
 		buf.WriteString("Recovery Paused:      yes (no connectivity after the emergency reboot; only checking)\n")
+	}
+	if rep.ProbesBlocked {
+		buf.WriteString("Internet Probes:      look BLOCKED (system DNS and the router answer); no network restart or reboot. Change canary_targets with `nr setup`\n")
 	}
 
 	if len(rep.QuarantinedServices) > 0 {
@@ -1162,6 +1202,14 @@ func (w *Watchdog) EvaluateDryRun(ctx context.Context) (*DryRunReport, error) {
 	report.Reason = decision.Reason
 	if decision.SkipReason != "" {
 		report.Reason = decision.SkipReason
+	}
+	if decision.Stage >= 3 {
+		if blocked, why := w.probesBlocked(ctx, canaryRes, baseline); blocked {
+			report.ActionAllowed = false
+			report.Reason = "internet probes look blocked: " + why
+			report.PlannedActions = []string{"Log only: no network restart or reboot while the probes look blocked; change canary_targets"}
+			return report, nil
+		}
 	}
 
 	switch decision.Stage {

@@ -473,11 +473,7 @@ func (w *wizard) recovery(ctx context.Context) error {
 		w.values["management_interface"] = iface
 	}
 
-	rebootHelp := p.t("reboot_explain")
-	if w.cur.RebootBudgetCount == 1 && w.cur.RebootBudgetWindowSec >= 86400 {
-		rebootHelp += " " + p.t("reboot_once")
-	}
-	p.explain(rebootHelp + " " + p.t("reboot_advice"))
+	p.explain(p.t("reboot_explain"))
 	reboot, err := w.yesNo("enable_reboot", p.t("reboot_q"), w.cur.EnableReboot, ptr(false))
 	if err != nil {
 		return err

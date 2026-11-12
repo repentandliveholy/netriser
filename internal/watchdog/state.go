@@ -38,6 +38,12 @@ type WatchdogState struct {
 	LastFailedAt        time.Time                 `json:"last_failed_at,omitempty"`
 	Baseline            netengine.Baseline        `json:"baseline"`
 	QuarantinedServices []ServiceQuarantineRecord `json:"quarantined_services,omitempty"`
+	// RebootedInOutage is set by an emergency reboot and cleared when
+	// connectivity returns: one reboot per outage. RecoveryPaused is set when
+	// the stages after that reboot did not restore access either; NetRiser
+	// then only keeps checking.
+	RebootedInOutage bool `json:"rebooted_in_outage,omitempty"`
+	RecoveryPaused   bool `json:"recovery_paused,omitempty"`
 }
 
 type StateManager struct {

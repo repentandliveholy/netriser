@@ -161,6 +161,7 @@ func (w *Watchdog) writeFailCount(count int) error {
 		state.LastFailedAt = w.clock.Now()
 	} else {
 		state.FirstFailedAt = time.Time{}
+		state.RebootedInOutage, state.RecoveryPaused = false, false
 	}
 	state.FailCount = count
 	return w.stateMgr.SaveState(state)
@@ -491,6 +492,20 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 		report.StageReason = decision.SkipReason
 	}
 
+	if decision.Stage == 4 && state.RebootedInOutage {
+		// The reboot and another round of stages 1-3 did not restore access:
+		// stop acting and keep checking until connectivity returns.
+		if !state.RecoveryPaused {
+			w.logger.Recovery("Connectivity did not return after the emergency reboot and another round of recovery stages. NetRiser stops acting and keeps checking; it resumes when connectivity returns.")
+			if fresh, _ := w.stateMgr.LoadState(); fresh != nil {
+				fresh.RecoveryPaused = true
+				_ = w.stateMgr.SaveState(fresh)
+			}
+		}
+		report.StageReason = "recovery paused after an emergency reboot; waiting for connectivity"
+		return report, nil
+	}
+
 	w.logger.Recovery("[Stage %d] %s", decision.Stage, decision.Reason)
 
 	switch decision.Stage {
@@ -543,6 +558,15 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 			// Proceed with reboot
 			w.logger.Recovery("[Stage 4] Pre-reboot verification failed. Executing emergency host reboot...")
 			_ = w.rebootTracker.RecordReboot()
+			// After the restart, checks and stages 1-3 run again from the
+			// start; no second reboot happens during this outage.
+			if fresh, _ := w.stateMgr.LoadState(); fresh != nil {
+				fresh.FailCount, fresh.RebootedInOutage, fresh.RecoveryPaused = 0, true, false
+				if err := w.stateMgr.SaveState(fresh); err != nil {
+					w.logger.Error("Could not record the reboot in state (%v); aborting the reboot.", err)
+					return report, err
+				}
+			}
 			report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{
 				Type:        netengine.ActionReboot,
 				Target:      "host",
@@ -752,6 +776,9 @@ func (w *Watchdog) restartNetwork(ctx context.Context, b netengine.Baseline) net
 // Failure counts must not make reboot faster when the recovery cadence changes.
 // Unknown legacy outage start times require a fresh measured outage window.
 func (w *Watchdog) guardRebootOutage(state *WatchdogState, allowed bool, reason string) (bool, string) {
+	if state != nil && state.RebootedInOutage {
+		return false, "already rebooted during this outage; one reboot per outage"
+	}
 	minimum := time.Duration(w.cfg.RebootMinOutageSec) * time.Second
 	if minimum > 0 && (state == nil || state.FirstFailedAt.IsZero() || w.clock.Now().Sub(state.FirstFailedAt) < minimum) {
 		return false, fmt.Sprintf("continuous outage shorter than reboot_min_outage_sec (%ds)", w.cfg.RebootMinOutageSec)
@@ -776,6 +803,7 @@ type StatusReport struct {
 	DefaultRoutePolicy    string                    `json:"default_route_policy"`
 	RebootBudget24h       int                       `json:"reboot_budget_24h"`
 	RecentReboots24h      int                       `json:"recent_reboots_24h"`
+	RecoveryPaused        bool                      `json:"recovery_paused,omitempty"`
 	ObservationMode       bool                      `json:"observation_mode"`
 	ConsecutiveFailures   int                       `json:"consecutive_failures"`
 	QuarantinedServices   []ServiceQuarantineRecord `json:"quarantined_services"`
@@ -840,6 +868,7 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		RecentReboots24h:      recentReboots,
 		ObservationMode:       w.cfg.ObservationMode,
 		ConsecutiveFailures:   fails,
+		RecoveryPaused:        state != nil && state.RecoveryPaused,
 		QuarantinedServices:   quarantined,
 		CanaryResults:         canaryRes,
 		Errors:                errs,
@@ -881,6 +910,9 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	buf.WriteString(fmt.Sprintf("Emergency Reboot:     %t\n", rep.EnableReboot))
 	buf.WriteString(fmt.Sprintf("Reboot Budget (24h):  %d used / %d allowed\n", rep.RecentReboots24h, rep.RebootBudget24h))
 	buf.WriteString(fmt.Sprintf("Consecutive Failures: %d\n", rep.ConsecutiveFailures))
+	if rep.RecoveryPaused {
+		buf.WriteString("Recovery Paused:      yes (no connectivity after the emergency reboot; only checking)\n")
+	}
 
 	if len(rep.QuarantinedServices) > 0 {
 		var list []string

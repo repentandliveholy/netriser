@@ -25,8 +25,11 @@ Setup and installers
 - Every question explains what it does and why, and shows what Enter selects
   and whether that is the recommended value or the current setting.
   Answers are `y`/`n` in every language, like command names.
-- Emergency reboot happens at most once per day by default
-  (`reboot_budget_window_sec: 86400`, previously one per hour).
+- Emergency reboot happens once per outage. After the restart, checks and
+  stages 1-3 run again; if access still does not return, NetRiser stops
+  acting and only keeps checking until connectivity returns (`nr status`
+  shows "Recovery Paused"). Previously it rebooted again as soon as the
+  hourly budget allowed.
 - Colored output in setup, the installers, `nr status`, `nr logs` and
   `nr live` on terminals (Windows 10+ consoles included); `NO_COLOR=1`
   disables it.

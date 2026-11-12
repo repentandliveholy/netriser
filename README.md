@@ -219,7 +219,10 @@ checks, separated by 15 seconds plus probe/action time. Initial outage detection
 can take up to the normal monitoring interval plus probe time. Existing explicit
 stage thresholds are retained. Reboot additionally requires the configured
 minimum outage, startup grace, final connectivity check and reboot budget;
-DNS-only failure never triggers reboot.
+DNS-only failure never triggers reboot. NetRiser reboots at most once per
+outage: after the restart, checks and stages 1-3 run again, and if access
+still does not return it stops acting and only keeps checking until
+connectivity returns (`nr status` shows "Recovery Paused").
 
 ## DNS recovery
 

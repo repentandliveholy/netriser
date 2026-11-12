@@ -27,6 +27,8 @@ type Manager interface {
 func RunDaemonLoop(ctx context.Context, w *watchdog.Watchdog, cfg *config.Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	w.LogStarted()
+	defer w.LogStopped()
 	var healthy atomic.Bool
 	go runAutomaticUpdates(ctx, w.ConfigPath(), &healthy)
 	sigChan := make(chan os.Signal, 1)

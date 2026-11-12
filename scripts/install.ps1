@@ -4,6 +4,19 @@
 # (irm | iex, file with or without a BOM).
 $ErrorActionPreference = 'Stop'
 
+# Without a console (over SSH, or with output redirected to a file) Windows
+# PowerShell writes text in the OEM code page (for example cp866), which turns
+# Russian and French messages into garbage. Write UTF-8 there instead, as the
+# netriser program itself does; a real console is left as it is. Write-Host
+# keeps the code page it started with, so messages then go to [Console]::Out.
+$Utf8Out = $false
+if ([Console]::IsOutputRedirected) {
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        $Utf8Out = $true
+    } catch { }
+}
+
 # ---------------------------------------------------------------------------
 # Output: colors (not with NO_COLOR) and translated messages.
 # ---------------------------------------------------------------------------
@@ -146,6 +159,7 @@ function Msg {
     return $text
 }
 function Say([string]$Text, [string]$Color) {
+    if ($Utf8Out) { [Console]::Out.WriteLine($Text); return }
     if ($Color -and $UseColor) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
 }
 function Write-Step { Say (Msg @args) 'Cyan' }
@@ -156,6 +170,7 @@ function Write-Hint { Say (Msg @args) 'DarkGray' }
 function Write-Info { Say (Msg @args) '' }
 function Write-Cmd([string]$Command, [string]$Key) {
     $label = '  ' + $Command.PadRight(28) + ' '
+    if ($Utf8Out) { [Console]::Out.WriteLine($label + (Msg $Key)); return }
     if ($UseColor) {
         Write-Host $label -NoNewline -ForegroundColor Green
         Write-Host (Msg $Key)

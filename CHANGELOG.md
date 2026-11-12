@@ -15,6 +15,28 @@ Status
   `reboot_budget_window_sec` (one hour by default). With emergency reboot
   on, the line now reads "Emergency Reboot: true (one per outage)".
 
+Log
+- The service writes a line when it starts (version, configuration file,
+  recovery or observation mode, default route policy) and when it stops. A
+  healthy service is otherwise silent, so `nr logs` did not show that it
+  runs.
+
+Mesh Watchdog paths
+- State, log and incident files left at the old Mesh Watchdog paths (for
+  example `C:\ProgramData\mesh-watchdog\...` or `/var/lib/mesh-watchdog`) move
+  to the NetRiser locations, and the configuration is switched to them. This
+  happens in the installer and when the service starts, so hosts that update
+  with `nr update` move too. Only settings that still hold the old default
+  path change; a path you chose stays. Nothing is overwritten: when the new
+  place already holds data or the move fails, that setting keeps the old path.
+  Empty Mesh Watchdog directories are removed.
+- `nr migrate` reports a migration only when it changed something.
+
+Windows installer
+- Over SSH or with output redirected to a file, Russian and French messages
+  were unreadable (Windows PowerShell wrote them in the OEM code page, e.g.
+  cp866). The installer writes UTF-8 there now; a console is unchanged.
+
 ## 1.3.3
 
 Access check

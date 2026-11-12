@@ -28,6 +28,7 @@ type Watchdog struct {
 	stateMgr      *StateManager
 	// lastRogue suppresses repeating the same observation-mode warning.
 	lastRogue string
+	version   string
 }
 
 type CheckReport struct {
@@ -109,6 +110,48 @@ func (w *Watchdog) SetJSONMode(jsonMode bool) {
 // SetConfigPath records the explicit configuration file path used.
 func (w *Watchdog) SetConfigPath(p string) {
 	w.configPath = p
+}
+
+// SetVersion records the program version for the start and stop log lines.
+func (w *Watchdog) SetVersion(v string) {
+	w.version = v
+}
+
+func (w *Watchdog) versionLabel() string {
+	if w.version == "" {
+		return "dev"
+	}
+	return w.version
+}
+
+// LogStarted writes one line when the daemon starts, so that "nr logs" shows
+// that the service runs, which version and which configuration it uses; a
+// healthy daemon is otherwise silent.
+func (w *Watchdog) LogStarted() {
+	path := w.configPath
+	if path == "" {
+		path = config.DefaultConfigPath()
+	}
+	mode := "recovery on"
+	if w.cfg.ObservationMode {
+		mode = "observation mode (no recovery actions)"
+	}
+	w.logger.Info("NetRiser %s started: configuration %s; %s; default route: %s", w.versionLabel(), path, mode, config.DefaultRoutePolicy(w.cfg))
+}
+
+// LogStopped writes one line when the daemon stops.
+func (w *Watchdog) LogStopped() {
+	w.logger.Info("NetRiser %s stopped.", w.versionLabel())
+}
+
+// LogRelocated records files moved from the old Mesh Watchdog paths at start.
+func (w *Watchdog) LogRelocated(moved []string, err error) {
+	if err != nil {
+		w.logger.Warn("Moving legacy mesh-watchdog files failed, the old paths stay in use: %v", err)
+	}
+	for _, line := range moved {
+		w.logger.Info("Moved legacy mesh-watchdog files: %s", line)
+	}
 }
 
 // SetEngine overrides network engine.

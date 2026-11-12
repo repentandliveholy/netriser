@@ -99,6 +99,10 @@ func migrateLegacy(explicit, defaultTarget, oldConfig string, legacy map[string]
 		}
 		return ce == nil, ce
 	}
+	if bytes.Equal(output, data) {
+		// Already migrated: nothing to write, nothing to report.
+		return false, nil
+	}
 	info, err := os.Stat(target)
 	if err != nil {
 		return false, err

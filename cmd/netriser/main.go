@@ -197,9 +197,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
 			os.Exit(1)
 		}
-		if migrated {
-			fmt.Println("Legacy mesh-watchdog configuration and state paths preserved.")
-		} else {
+		moved, err := config.RelocateLegacyPaths(opts.confPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Moving legacy files failed: %v\n", err)
+			os.Exit(1)
+		}
+		switch {
+		case len(moved) > 0:
+			fmt.Println("Legacy mesh-watchdog files moved to the NetRiser locations:")
+			for _, line := range moved {
+				fmt.Println("  " + line)
+			}
+		case migrated:
+			fmt.Println("Legacy mesh-watchdog configuration preserved.")
+		default:
 			fmt.Println("No legacy configuration to migrate.")
 		}
 		return
@@ -236,6 +247,14 @@ func main() {
 		return
 	}
 
+	// The daemon moves files left at the old Mesh Watchdog paths before it
+	// opens them; this covers hosts that reach 1.3.4 through "nr update".
+	var relocated []string
+	var relocateErr error
+	if cmd == "run" {
+		relocated, relocateErr = config.RelocateLegacyPaths(opts.confPath)
+	}
+
 	cfg, err := config.Load(opts.confPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
@@ -253,9 +272,11 @@ func main() {
 	case "run":
 		w := watchdog.NewWatchdog(cfg, opts.verbose)
 		w.SetJSONMode(opts.jsonOutput)
+		w.SetVersion(Version)
 		if opts.confPath != "" {
 			w.SetConfigPath(opts.confPath)
 		}
+		w.LogRelocated(relocated, relocateErr)
 		if err := svcMgr.Run(ctx, w); err != nil {
 			fmt.Fprintf(os.Stderr, "Daemon runtime error: %v\n", err)
 			os.Exit(1)

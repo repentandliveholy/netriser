@@ -29,8 +29,8 @@ func TestMigrateExplicitPreservesSettingsAndStatePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = MigrateLegacy(path); err != nil {
-		t.Fatal(err)
+	if migrated, err := MigrateLegacy(path); err != nil || migrated {
+		t.Fatalf("second migration = %t, %v; want nothing reported", migrated, err)
 	}
 	second, err := os.ReadFile(path)
 	if err != nil {

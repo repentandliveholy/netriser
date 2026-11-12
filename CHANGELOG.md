@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.1
+
+Added
+- `nr logs [N|all]` prints the last log entries, continuing into the rotated
+  log; `nr live` follows new entries in real time without blocking rotation.
+- `nr setup` and `nr check-config` show the configured log file and incident
+  directory.
+
+Fixed
+- Installers printed the default log path even on hosts that keep their
+  Mesh Watchdog log paths.
+- `nr migrate` (run by every installation) claimed to have preserved a legacy
+  configuration on hosts that never had one.
+- `nr update` reported a service restart on macOS hosts without the service.
+
 ## 1.3.0
 
 Security

@@ -284,9 +284,9 @@ fi
 run_root "$BIN" version
 echo "NetRiser installed. Rollback backup: $BACKUP"
 echo "License: MIT; license texts installed in $DOC_DIR"
-echo "Commands: nr status; nr setup (answer the installation questions again); nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status"
+echo "Commands: nr status; nr logs; nr live; nr setup (answer the installation questions again); nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status"
 if run_root "$BIN" --config "$EFFECTIVE_CONFIG" observe status 2>/dev/null | grep -q 'Observation mode: ON'; then
   echo 'NetRiser is in observation mode: it records incidents but changes nothing. Enable recovery with: nr observe off'
 fi
-echo "Logs: see \"Log file\" above (also shown by: nr check-config)$(if [ "$OS" = linux ]; then echo '; service journal: journalctl -u netriser -f'; fi)"
+echo "Logs: nr logs (recent), nr live (real time); the file path is shown above as \"Log file\"$(if [ "$OS" = linux ]; then echo '; service journal: journalctl -u netriser -f'; fi)"
 SUCCESS=1

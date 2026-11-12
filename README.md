@@ -85,9 +85,9 @@ configuration without asking.
 
 Keep observation mode on. NetRiser then records incidents and the actions it
 would have taken, but changes no routes, services, DNS configuration or
-binaries. Review the log file and the incident directory (`nr check-config`
-shows both paths) for a while, then enable recovery with `nr observe off`. Switch back at any time with
-`nr observe on`.
+binaries. Review the log (`nr logs`, or `nr live` in real time) and the
+incident directory (`nr check-config` shows its path) for a while, then enable
+recovery with `nr observe off`. Switch back at any time with `nr observe on`.
 
 ## Migration from Mesh Watchdog
 
@@ -209,7 +209,9 @@ not trigger overlay quarantine, WAN restarts or emergency reboot.
 netriser status
 nr status                    # same application, short command
 netriser setup               # answer the installation questions again
-netriser check-config
+netriser check-config        # validate settings; show log and incident paths
+netriser logs                # last 50 log entries (nr logs 200, nr logs all)
+netriser live                # log entries in real time (Ctrl+C to stop)
 netriser init-config         # create defaults if missing; keep an existing config
 netriser run                 # foreground mode
 netriser observe on|off      # read-only observation mode or active recovery

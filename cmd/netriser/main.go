@@ -119,6 +119,8 @@ Commands:
   reboot [cmd]       Quickly toggle emergency reboot (on, off, enable, disable, status)
   observe [cmd]      Observation (read-only) mode: on, off, status
   status             Display structured status of baseline, canaries, and routes
+  logs [N|all]       Show the last N log entries (default 50, including the rotated log)
+  live               Show new log entries in real time (Ctrl+C to stop)
   run                Run in continuous background daemon / service mode
   check              Run one-shot connectivity check and auto-remediate if down
   autoupdate [cmd]   Automatic updates: on, off, status (default: on)
@@ -234,6 +236,10 @@ func main() {
 	svcMgr := service.NewManager(cfg)
 
 	switch cmd {
+	case "logs", "log":
+		os.Exit(runLogs(cfg.LogFile, opts.commands[1:]))
+	case "live":
+		os.Exit(runLive(cfg.LogFile))
 	case "run":
 		w := watchdog.NewWatchdog(cfg, opts.verbose)
 		w.SetJSONMode(opts.jsonOutput)

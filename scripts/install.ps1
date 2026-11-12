@@ -205,11 +205,11 @@ try {
     }
     Write-Host "NetRiser installed. Migration backup: $Backup" -ForegroundColor Green
     Write-Host "License: MIT; license texts installed in $LicenseDir"
-    Write-Host 'Commands: nr status; nr setup (answer the installation questions again); nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status'
+    Write-Host 'Commands: nr status; nr logs; nr live; nr setup (answer the installation questions again); nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status'
     if ((& $BinPath --config $EffectiveConfig observe status) -match 'Observation mode: ON') {
         Write-Host 'NetRiser is in observation mode: it records incidents but changes nothing. Enable recovery with: nr observe off'
     }
-    Write-Host 'Logs: see "Log file" above (also shown by: nr check-config)'
+    Write-Host 'Logs: nr logs (recent), nr live (real time); the file path is shown above as "Log file"'
 } catch {
     Rollback-Install
     throw

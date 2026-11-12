@@ -70,6 +70,12 @@ type Config struct {
 	// off. Traffic then leaves outside the VPN and a kill-switch is lifted, so
 	// it is off for new installations. Mesh overlays are not affected.
 	AllowVPNBypass bool `yaml:"allow_vpn_bypass"`
+	// FullTunnel records the setup answer to "does this host route all of its
+	// traffic through a VPN or exit node". false means only the physical
+	// uplink may carry the default route: an overlay or VPN that takes it over
+	// is removed at once, even while the internet works, and not restarted.
+	// Unset (configurations from before 1.3.2) acts only when checks fail.
+	FullTunnel *bool `yaml:"full_tunnel"`
 
 	// Emergency reboot settings
 	EnableReboot          bool `yaml:"enable_reboot"`
@@ -444,6 +450,27 @@ func sanitizeYAML(data []byte) []byte {
 		out = append(out, b)
 	}
 	return out
+}
+
+// UplinkOnly reports whether this host was declared to have no full tunnel,
+// so any overlay default route not in allowed_default_interfaces is removed
+// immediately.
+func (c *Config) UplinkOnly() bool {
+	return c != nil && c.FullTunnel != nil && !*c.FullTunnel
+}
+
+// DefaultRoutePolicy describes in one line who may carry the default route.
+func DefaultRoutePolicy(c *Config) string {
+	switch {
+	case c.UplinkOnly():
+		return "physical uplink only; a VPN or exit node that takes it over is removed immediately"
+	case c.FullTunnel == nil:
+		return fmt.Sprintf("not set by setup; overlay routes are handled only when checks fail (VPN bypass: %t)", c.AllowVPNBypass)
+	case c.AllowVPNBypass:
+		return "full tunnel; access has priority: a VPN that cuts the host off is bypassed"
+	default:
+		return "full tunnel; privacy has priority: the VPN is never bypassed"
+	}
 }
 
 // IsAllowedDefaultInterface checks whether an overlay interface is authorized to have default route (e.g. exit-node).

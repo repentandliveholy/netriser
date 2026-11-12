@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.3.1}"
+VERSION="${VERSION:-1.3.2}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
@@ -68,7 +68,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.3.1: nr logs and nr live show the log without tail; a stopped overlay (for example a WireGuard tunnel whose server is unreachable) is restarted at most 3 times (max_restore_attempts) and then left stopped; installers show the real log path; clearer migrate and update messages.",
+  "release_notes": "NetRiser 1.3.2: the setup answer about a full tunnel now decides the mode. Without a full tunnel, any VPN or exit node that takes over the default route is removed immediately, even while the internet works, and not restarted; with a full tunnel, you choose whether access or keeping traffic in the VPN comes first. Existing configurations keep their behaviour until nr setup is run.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},

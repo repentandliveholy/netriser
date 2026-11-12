@@ -33,6 +33,11 @@ type mockEngine struct {
 	cleanActions     []netengine.ActionResult
 	quarantineActs   []netengine.ActionResult
 	restoreActs      []netengine.ActionResult
+	rogue            []string
+}
+
+func (m *mockEngine) RogueDefaultRoutes(ctx context.Context) ([]string, error) {
+	return m.rogue, nil
 }
 
 func (m *mockEngine) DetectBaseline(ctx context.Context) (netengine.Baseline, error) {
@@ -970,5 +975,96 @@ func TestStoppingGivenUpServiceAgainResetsBudget(t *testing.T) {
 	state, _ := w.stateMgr.LoadState()
 	if rec := state.QuarantinedServices[0]; rec.GaveUp || rec.Attempts != 0 || rec.NextRetryAfter.IsZero() {
 		t.Fatalf("budget not reset: %+v", rec)
+	}
+}
+
+func uplinkOnly(cfg *config.Config) {
+	no := false
+	cfg.FullTunnel = &no
+}
+
+// On a host declared without a full tunnel, a VPN that takes over the default
+// route is removed while the internet still works and is never restarted.
+func TestUplinkOnlyRemovesVPNDefaultRouteWhileHealthy(t *testing.T) {
+	w, cfg, engine, checker := setupTestWatchdog(t)
+	uplinkOnly(cfg)
+	checker.fastResult = canary.HealthResult{Healthy: true}
+	engine.rogue = []string{"0.0.0.0/0 on wg-test"}
+	engine.cleanActions = []netengine.ActionResult{{Type: netengine.ActionQuarantineService, Target: "WireGuardTunnel$wg-test", Status: netengine.ActionExecuted}}
+	rep, err := w.RunCheckCycle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !engine.cleanCalled || !rep.Healthy || !rep.Remediated {
+		t.Fatalf("rogue VPN route not removed while healthy: clean=%v %+v", engine.cleanCalled, rep)
+	}
+	state, _ := w.stateMgr.LoadState()
+	if len(state.QuarantinedServices) != 1 || !state.QuarantinedServices[0].Enforced {
+		t.Fatalf("VPN not recorded as kept stopped: %+v", state.QuarantinedServices)
+	}
+
+	// Later healthy cycles never restart it, even when its retry time passed.
+	engine.rogue, engine.cleanCalled = nil, false
+	state.QuarantinedServices[0].NextRetryAfter = w.clock.Now().Add(-time.Hour)
+	state.QuarantinedServices[0].QuarantinedAt = w.clock.Now().Add(-time.Hour)
+	w.stateMgr.SaveState(state)
+	for i := 0; i < 2; i++ {
+		if _, err := w.RunCheckCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checker.fastResult = canary.HealthResult{Healthy: false} // nor during an outage
+	cfg.AllowServiceQuarantine, cfg.AllowRouteSanitation = false, false
+	if _, err := w.RunCheckCycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.restoreCalled {
+		t.Fatalf("restarted a VPN on a host without a full tunnel: %v", engine.restoredServices)
+	}
+	if out := w.Status(context.Background()); !strings.Contains(out, "host without a full tunnel; not restarted") {
+		t.Fatalf("status does not explain the stopped VPN:\n%s", out)
+	}
+}
+
+// Without the setup answer (configurations from before 1.3.2), observation
+// mode, or route sanitation, a healthy host is left alone.
+func TestUplinkOnlyEnforcementRequiresAnswerAndPermission(t *testing.T) {
+	for name, adjust := range map[string]func(*config.Config){
+		"unanswered":  func(c *config.Config) {},
+		"full tunnel": func(c *config.Config) { yes := true; c.FullTunnel = &yes },
+		"observation": func(c *config.Config) { uplinkOnly(c); c.ObservationMode = true },
+		"no routes":   func(c *config.Config) { uplinkOnly(c); c.AllowRouteSanitation = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, cfg, engine, checker := setupTestWatchdog(t)
+			adjust(cfg)
+			checker.fastResult = canary.HealthResult{Healthy: true}
+			engine.rogue = []string{"0.0.0.0/0 on wg-test"}
+			if _, err := w.RunCheckCycle(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if engine.cleanCalled {
+				t.Fatal("changed routes on a healthy host")
+			}
+		})
+	}
+}
+
+// A mesh overlay stopped on such a host is still restarted: it is the access
+// path, and enforcement removes its default route again if needed.
+func TestUplinkOnlyStillRestoresMeshOverlays(t *testing.T) {
+	w, cfg, _, _ := setupTestWatchdog(t)
+	uplinkOnly(cfg)
+	w.recordQuarantine([]netengine.ActionResult{
+		{Type: netengine.ActionQuarantineService, Target: "tailscaled", Status: netengine.ActionExecuted},
+		{Type: netengine.ActionQuarantineService, Target: "wg-quick@wg0", Status: netengine.ActionExecuted},
+	})
+	state, _ := w.stateMgr.LoadState()
+	got := map[string]bool{}
+	for _, rec := range state.QuarantinedServices {
+		got[rec.Name] = rec.Enforced
+	}
+	if got["tailscaled"] || !got["wg-quick@wg0"] {
+		t.Fatalf("wrong restart policy: %v", got)
 	}
 }

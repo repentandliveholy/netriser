@@ -61,6 +61,19 @@ func (e *WindowsEngine) rogueRoutes(ctx context.Context) ([]WindowsRoute, error)
 	return WindowsRogueRoutes(ParseWindowsRoutes(out), e.cfg), nil
 }
 
+// RogueDefaultRoutes implements RogueRouteDetector.
+func (e *WindowsEngine) RogueDefaultRoutes(ctx context.Context) ([]string, error) {
+	routes, err := e.rogueRoutes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, r.Prefix+" on "+r.Alias)
+	}
+	return out, nil
+}
+
 func (e *WindowsEngine) rememberRogue(routes []WindowsRoute) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

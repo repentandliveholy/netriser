@@ -26,6 +26,8 @@ type Watchdog struct {
 	startedAt     time.Time
 	rebootTracker *RebootTracker
 	stateMgr      *StateManager
+	// lastRogue suppresses repeating the same observation-mode warning.
+	lastRogue string
 }
 
 type CheckReport struct {
@@ -331,13 +333,18 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 				w.logger.Warn("Policy routing failed: %v", err)
 			}
 		}
+		if w.enforceUplinkOnly(ctx, baseline, bErr, report) {
+			if fresh, _ := w.stateMgr.LoadState(); fresh != nil {
+				state = fresh
+			}
+		}
 		if len(state.QuarantinedServices) > 0 && !w.cfg.ObservationMode {
 			var remaining []ServiceQuarantineRecord
 			broken := false
 			recoveredCount := 0
 
 			for idx, rec := range state.QuarantinedServices {
-				if rec.GaveUp || broken || recoveredCount >= 1 || w.clock.Now().Before(rec.NextRetryAfter) {
+				if rec.GaveUp || rec.Enforced || broken || recoveredCount >= 1 || w.clock.Now().Before(rec.NextRetryAfter) {
 					remaining = append(remaining, rec)
 					continue
 				}
@@ -421,7 +428,7 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 			// A service whose restart already cut connectivity caused the
 			// problem; releasing it during an outage would only reset its
 			// restart limit.
-			if rec.GaveUp || rec.Attempts > 0 {
+			if rec.GaveUp || rec.Enforced || rec.Attempts > 0 {
 				continue
 			}
 			if !rec.QuarantinedAt.IsZero() && w.clock.Now().Sub(rec.QuarantinedAt) < 10*time.Minute {
@@ -639,6 +646,58 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 	return report, nil
 }
 
+// keepStopped reports whether a stopped service must not be restarted: a
+// full-tunnel VPN on a host configured without a full tunnel would only take
+// over the default route again.
+func (w *Watchdog) keepStopped(service string) bool {
+	if !w.cfg.UplinkOnly() {
+		return false
+	}
+	kind, ok := netengine.ServiceKind(service)
+	return ok && kind == netengine.KindVPN
+}
+
+// enforceUplinkOnly removes overlay default routes on a host configured
+// without a full tunnel, while connectivity is healthy. It reports whether it
+// changed anything (the quarantine state may then have been updated).
+func (w *Watchdog) enforceUplinkOnly(ctx context.Context, baseline netengine.Baseline, bErr error, report *CheckReport) bool {
+	if !w.cfg.UplinkOnly() || !w.cfg.AllowRouteSanitation || bErr != nil || !baseline.IsValid() {
+		return false
+	}
+	det, ok := w.engine.(netengine.RogueRouteDetector)
+	if !ok {
+		return false
+	}
+	rogue, err := det.RogueDefaultRoutes(ctx)
+	if err != nil {
+		w.logger.Warn("Default route ownership check failed: %v", err)
+		return false
+	}
+	key := strings.Join(rogue, ", ")
+	defer func() { w.lastRogue = key }()
+	if len(rogue) == 0 {
+		return false
+	}
+	if w.cfg.ObservationMode {
+		if key != w.lastRogue {
+			w.logger.Warn("[Observation] Default route taken over by %s on a host configured without a full tunnel; NetRiser would remove it now.", key)
+		}
+		return false
+	}
+	w.logger.Recovery("Default route taken over by %s on a host configured without a full tunnel (full_tunnel: false). Removing it.", key)
+	actions, cleanErr := w.engine.SurgicalCleanRoutes(ctx, baseline)
+	if cleanErr != nil {
+		actions = append(actions, netengine.ActionResult{Type: netengine.ActionCleanRoute, Target: "routes", Status: netengine.ActionFailed, Error: cleanErr.Error()})
+	}
+	for _, act := range actions {
+		w.logger.Recovery("  - %s", act.String())
+	}
+	report.ActionsTaken = append(report.ActionsTaken, actions...)
+	report.Remediated = true
+	w.recordQuarantine(actions)
+	return true
+}
+
 // recordQuarantine stores overlays stopped by remediation in the state.
 func (w *Watchdog) recordQuarantine(actions []netengine.ActionResult) {
 	var stopped []string
@@ -662,7 +721,7 @@ func (w *Watchdog) recordQuarantine(actions []netengine.ActionResult) {
 				// The user restarted it after NetRiser gave up and it failed
 				// again: this is a new incident with a fresh restart budget.
 				if q.GaveUp {
-					curState.QuarantinedServices[i] = ServiceQuarantineRecord{Name: name, QuarantinedAt: w.clock.Now(), InitialState: "active", NextRetryAfter: w.clock.Now().Add(5 * time.Minute)}
+					curState.QuarantinedServices[i] = ServiceQuarantineRecord{Name: name, QuarantinedAt: w.clock.Now(), InitialState: "active", NextRetryAfter: w.clock.Now().Add(5 * time.Minute), Enforced: w.keepStopped(name)}
 				}
 				break
 			}
@@ -673,6 +732,7 @@ func (w *Watchdog) recordQuarantine(actions []netengine.ActionResult) {
 				QuarantinedAt:  w.clock.Now(),
 				InitialState:   "active",
 				NextRetryAfter: w.clock.Now().Add(5 * time.Minute),
+				Enforced:       w.keepStopped(name),
 			})
 		}
 	}
@@ -713,6 +773,7 @@ type StatusReport struct {
 	RecoveryIntervalSec   int                       `json:"recovery_interval_sec"`
 	RebootMinOutageSec    int                       `json:"reboot_min_outage_sec"`
 	EnableReboot          bool                      `json:"enable_reboot"`
+	DefaultRoutePolicy    string                    `json:"default_route_policy"`
 	RebootBudget24h       int                       `json:"reboot_budget_24h"`
 	RecentReboots24h      int                       `json:"recent_reboots_24h"`
 	ObservationMode       bool                      `json:"observation_mode"`
@@ -771,6 +832,7 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		EnableReboot:          w.cfg.EnableReboot,
 		AutoUpdate:            w.cfg.AutoUpdate,
 		AutoUpdateIntervalSec: w.cfg.AutoUpdateIntervalSec,
+		DefaultRoutePolicy:    config.DefaultRoutePolicy(w.cfg),
 		CheckIntervalSec:      w.cfg.CheckIntervalSec,
 		RecoveryIntervalSec:   w.cfg.RecoveryIntervalSec,
 		RebootMinOutageSec:    w.cfg.RebootMinOutageSec,
@@ -815,6 +877,7 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	buf.WriteString(fmt.Sprintf("Policy Routing Table: %d\n", rep.PolicyRoutingTable))
 	buf.WriteString(fmt.Sprintf("Policy Rule Priority: %d\n", rep.PolicyRoutingPriority))
 	buf.WriteString(fmt.Sprintf("Automatic Updates:    %t (every %ds)\n", rep.AutoUpdate, rep.AutoUpdateIntervalSec))
+	buf.WriteString(fmt.Sprintf("Default Route:        %s\n", rep.DefaultRoutePolicy))
 	buf.WriteString(fmt.Sprintf("Emergency Reboot:     %t\n", rep.EnableReboot))
 	buf.WriteString(fmt.Sprintf("Reboot Budget (24h):  %d used / %d allowed\n", rep.RecentReboots24h, rep.RebootBudget24h))
 	buf.WriteString(fmt.Sprintf("Consecutive Failures: %d\n", rep.ConsecutiveFailures))
@@ -822,7 +885,9 @@ func (w *Watchdog) Status(ctx context.Context) string {
 	if len(rep.QuarantinedServices) > 0 {
 		var list []string
 		for _, q := range rep.QuarantinedServices {
-			if q.GaveUp {
+			if q.Enforced {
+				list = append(list, fmt.Sprintf("%s (stopped: took over the default route on a host without a full tunnel; not restarted)", q.Name))
+			} else if q.GaveUp {
 				list = append(list, fmt.Sprintf("%s (left stopped after %d failed restarts; start it yourself)", q.Name, q.Attempts))
 			} else {
 				list = append(list, fmt.Sprintf("%s (retry in %v)", q.Name, time.Until(q.NextRetryAfter).Round(time.Second)))

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.2
+
+Changed
+- The setup answer "does this host route all of its traffic through a VPN or
+  exit node" is now stored as `full_tunnel` and decides the mode:
+  - `false`: only the physical uplink may carry the default route. A VPN,
+    exit node or tunnel that takes it over is removed immediately, even while
+    the internet works, and a VPN stopped for this is never restarted. This
+    also covers a working full tunnel whose kill-switch blocks remote access.
+  - `true`: the VPN question asks whether access or keeping all traffic in
+    the VPN matters more (`allow_vpn_bypass`).
+- Hosts without a full tunnel are no longer asked about VPN bypass.
+- `nr status` and `nr setup` show the default route mode.
+- Installers accept `NETRISER_FULL_TUNNEL`; `setup` accepts `--full-tunnel`.
+
+Configurations without `full_tunnel` keep their behaviour; run `nr setup` to
+choose a mode.
+
 ## 1.3.1
 
 Changed

@@ -116,7 +116,8 @@ try {
             @('NETRISER_OBSERVATION_MODE', '--observation-mode'),
             @('NETRISER_AUTO_UPDATE', '--auto-update'),
             @('NETRISER_ENABLE_REBOOT', '--enable-reboot'),
-            @('NETRISER_ALLOW_VPN_BYPASS', '--allow-vpn-bypass'))) {
+            @('NETRISER_ALLOW_VPN_BYPASS', '--allow-vpn-bypass'),
+            @('NETRISER_FULL_TUNNEL', '--full-tunnel'))) {
         $value = Normalize-Choice $choice[0] ([Environment]::GetEnvironmentVariable($choice[0]))
         if ($value) { $setupArgs += "$($choice[1])=$value" }
     }

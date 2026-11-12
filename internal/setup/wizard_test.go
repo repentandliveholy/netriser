@@ -44,7 +44,7 @@ func TestFreshSetupDefaultsAreSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ObservationMode || cfg.AllowVPNBypass || cfg.EnableReboot || !cfg.AutoUpdate || len(cfg.AllowedDefaultInterfaces) != 0 {
+	if !cfg.ObservationMode || cfg.AllowVPNBypass || cfg.EnableReboot || !cfg.AutoUpdate || len(cfg.AllowedDefaultInterfaces) != 0 || !cfg.UplinkOnly() {
 		t.Fatalf("unsafe defaults: %+v", cfg)
 	}
 	text := out.String()
@@ -65,7 +65,7 @@ func TestSetupAnswersAreApplied(t *testing.T) {
 		"10.0.0.1:22",                  // mesh canaries
 		"y",                            // all traffic through VPN
 		"",                             // accept suggested wg0
-		"y",                            // allow VPN bypass
+		"y",                            // access over keeping traffic in the VPN
 		"y",                            // add custom overlay
 		"corp",                         // name
 		"^corp[0-9]+$",                 // pattern
@@ -88,7 +88,7 @@ func TestSetupAnswersAreApplied(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	if cfg.ObservationMode || cfg.CanaryTargets[1] != "192.0.2.54:53" || cfg.MeshCanaries[0] != "10.0.0.1:22" ||
-		cfg.AllowedDefaultInterfaces[0] != "wg0" || !cfg.AllowVPNBypass || cfg.Overlays[0].Services[0] != "corp-vpn.service" ||
+		cfg.AllowedDefaultInterfaces[0] != "wg0" || !cfg.AllowVPNBypass || cfg.FullTunnel == nil || !*cfg.FullTunnel || cfg.Overlays[0].Services[0] != "corp-vpn.service" ||
 		cfg.ManagementInterface != "eth1" || !cfg.EnableReboot || cfg.RebootMinOutageSec != 600 || cfg.AutoUpdate {
 		t.Fatalf("answers not applied: %+v\n%s", cfg, out)
 	}
@@ -126,8 +126,9 @@ func TestSetupWarnsWhenProbesFailAndRequiresTargets(t *testing.T) {
 
 func TestSetupCancelAndEndOfInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	// 13 questions without detected overlays, then decline saving.
-	opts, _ := stubOpts(path, strings.Repeat("\n", 13)+"n\n", true)
+	// 12 questions without detected overlays (no full tunnel, so no bypass
+	// question), then decline saving.
+	opts, _ := stubOpts(path, strings.Repeat("\n", 12)+"n\n", true)
 	opts.Detect = func() []Detected { return nil }
 	if _, err := Run(context.Background(), opts); !errors.Is(err, ErrCancelled) {
 		t.Fatalf("declined save: %v", err)
@@ -155,5 +156,31 @@ func TestExplicitSettingsSkipQuestionsAndNonInteractive(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "observation (read-only) mode [") || values["enable_reboot"] != true {
 		t.Fatalf("explicit setting was asked:\n%s", out)
+	}
+}
+
+// Answering "no full tunnel" records full_tunnel: false, clears interfaces
+// allowed to carry the default route and does not ask about VPN bypass.
+func TestSetupWithoutFullTunnelSkipsBypassQuestion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("allowed_default_interfaces: [wg0]\nallow_vpn_bypass: false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	input := "\n\n\n" + "n\n" + strings.Repeat("\n", 40) // observation, probes, mesh, full tunnel = no
+	opts, out := stubOpts(path, input, true)
+	values, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	cfg, _, err := config.Apply(path, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.UplinkOnly() || len(cfg.AllowedDefaultInterfaces) != 0 {
+		t.Fatalf("no-full-tunnel answer not applied: %+v", cfg)
+	}
+	text := out.String()
+	if strings.Contains(text, "more important than keeping all traffic") || !strings.Contains(text, "removed immediately, even while") {
+		t.Fatalf("wrong questions for a host without a full tunnel:\n%s", text)
 	}
 }

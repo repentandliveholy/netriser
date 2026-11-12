@@ -28,6 +28,7 @@ func runSetup(opts cliOptions) int {
 		"auto_update":      opts.installAutoUpdate,
 		"enable_reboot":    opts.installReboot,
 		"allow_vpn_bypass": opts.installVPNBypass,
+		"full_tunnel":      opts.installFullTunnel,
 	} {
 		v, err := optionalBool(raw)
 		if err != nil {
@@ -99,7 +100,8 @@ func runSetup(opts cliOptions) int {
 		return 1
 	}
 	fmt.Printf("Configuration: %s (%s)\n", path, map[bool]string{true: "updated", false: "unchanged"}[changed])
-	fmt.Printf("Observation mode (no recovery actions): %t\nAutomatic updates: %t\nEmergency reboot: %t\nBypass full-tunnel VPNs: %t\n", cfg.ObservationMode, cfg.AutoUpdate, cfg.EnableReboot, cfg.AllowVPNBypass)
+	fmt.Printf("Observation mode (no recovery actions): %t\nAutomatic updates: %t\nEmergency reboot: %t\n", cfg.ObservationMode, cfg.AutoUpdate, cfg.EnableReboot)
+	fmt.Printf("Default route: %s\n", config.DefaultRoutePolicy(cfg))
 	if len(cfg.AllowedDefaultInterfaces) > 0 {
 		fmt.Printf("Interfaces allowed to carry the default route: %s\n", strings.Join(cfg.AllowedDefaultInterfaces, ", "))
 	}

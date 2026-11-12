@@ -249,6 +249,16 @@ func (e *DarwinEngine) darwinRogueRoutes(ctx context.Context) []DarwinRouteEntry
 	return rogue
 }
 
+// RogueDefaultRoutes implements RogueRouteDetector.
+// darwinRogueRoutes already excludes allowed_default_interfaces.
+func (e *DarwinEngine) RogueDefaultRoutes(ctx context.Context) ([]string, error) {
+	var out []string
+	for _, r := range e.darwinRogueRoutes(ctx) {
+		out = append(out, r.Destination+" on "+r.Interface)
+	}
+	return out, nil
+}
+
 // QuarantineMeshServices requires current evidence: an overlay that recovery
 // may touch publishes a default or /1 route. macOS VPN clients share utun
 // interface names, so the known NetBird and Tailscale clients are disconnected.

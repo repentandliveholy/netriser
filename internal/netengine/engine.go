@@ -54,6 +54,12 @@ type DNSRecoveryEngine interface {
 	RestoreDNS(ctx context.Context) ([]ActionResult, error)
 }
 
+// RogueRouteDetector lists, without changing anything, the overlay default
+// and split-default routes that recovery may remove ("<prefix> on <iface>").
+type RogueRouteDetector interface {
+	RogueDefaultRoutes(ctx context.Context) ([]string, error)
+}
+
 type NetworkEngine interface {
 	// DetectBaseline discovers physical interface, gateway, and primary IP.
 	DetectBaseline(ctx context.Context) (Baseline, error)

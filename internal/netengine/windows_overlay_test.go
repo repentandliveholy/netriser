@@ -109,6 +109,28 @@ func TestWindowsVPNsAreLeftAloneWithoutBypass(t *testing.T) {
 	}
 }
 
+// A host declared without a full tunnel treats every VPN default route as
+// rogue, even without allow_vpn_bypass; allowed interfaces stay exempt.
+func TestWindowsUplinkOnlyTreatsVPNRoutesAsRogue(t *testing.T) {
+	routes := []WindowsRoute{
+		{Alias: "Ethernet 3", Prefix: "0.0.0.0/0", Metric: 35, Description: "Realtek Ethernet"},
+		{Alias: "wg-hetzner-ovs-server-1", Prefix: "0.0.0.0/0", Metric: 5, Description: "WireGuard Tunnel"},
+		{Alias: "Mullvad", Prefix: "0.0.0.0/1", Metric: 5, Description: "Mullvad Tunnel"},
+		{Alias: "ZeroTier One [abc]", Prefix: "0.0.0.0/0", Metric: 10034, Description: "ZeroTier Virtual Port"},
+	}
+	cfg := config.DefaultConfig()
+	no := false
+	cfg.FullTunnel = &no
+	rogue := WindowsRogueRoutes(routes, cfg)
+	if len(rogue) != 2 || rogue[0].Alias != "wg-hetzner-ovs-server-1" || rogue[1].Alias != "Mullvad" {
+		t.Fatalf("VPN routes must be rogue on a host without a full tunnel: %+v", rogue)
+	}
+	cfg.AllowedDefaultInterfaces = []string{"Mullvad"}
+	if rogue = WindowsRogueRoutes(routes, cfg); len(rogue) != 1 || rogue[0].Alias != "wg-hetzner-ovs-server-1" {
+		t.Fatalf("allowed interface not exempt: %+v", rogue)
+	}
+}
+
 func TestWindowsAdapterClassification(t *testing.T) {
 	for _, c := range []struct {
 		alias, desc string

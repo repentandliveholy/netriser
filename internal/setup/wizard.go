@@ -252,27 +252,43 @@ func (w *wizard) overlays() error {
 		}
 	}
 
-	if !w.explicit("allowed_default_interfaces") {
-		p.printf("If this host deliberately sends all of its own traffic through a VPN or an exit\nnode, NetRiser must leave that interface's default route alone.\n")
-		full, err := p.yesNo("Does this host route all of its traffic through a VPN or exit node", len(w.cur.AllowedDefaultInterfaces) > 0)
-		if err != nil {
+	full := len(w.cur.AllowedDefaultInterfaces) > 0
+	if w.cur.FullTunnel != nil {
+		full = *w.cur.FullTunnel
+	}
+	if v, ok := w.opts.Explicit["full_tunnel"].(bool); ok {
+		full = v
+	} else {
+		p.printf("A full tunnel means this host deliberately sends all of its own traffic\nthrough a VPN or an exit node.\n")
+		var err error
+		if full, err = p.yesNo("Does this host route all of its traffic through a VPN or exit node", full); err != nil {
 			return err
 		}
-		allowed := []string{}
-		if full {
-			def := w.cur.AllowedDefaultInterfaces
-			if len(def) == 0 {
-				def = vpnIfaces
-			}
-			if allowed, err = p.list("Interfaces allowed to carry the default route", def); err != nil {
-				return err
-			}
+		w.values["full_tunnel"] = full
+	}
+
+	if !full {
+		p.printf("Only the physical uplink may carry this host's traffic. A VPN, exit node or\ntunnel that takes over the default route is removed immediately, even while\nthe internet still works, and a VPN stopped for this is not restarted.\n")
+		if !w.explicit("allowed_default_interfaces") {
+			w.values["allowed_default_interfaces"] = []string{}
+		}
+		return w.customOverlays()
+	}
+
+	if !w.explicit("allowed_default_interfaces") {
+		def := w.cur.AllowedDefaultInterfaces
+		if len(def) == 0 {
+			def = vpnIfaces
+		}
+		allowed, err := p.list("Interfaces allowed to carry the default route", def)
+		if err != nil {
+			return err
 		}
 		w.values["allowed_default_interfaces"] = allowed
 	}
 
-	p.printf("A full-tunnel VPN (WireGuard, OpenVPN, IPsec, commercial VPN client) can cut\nthe host off when its server is unreachable, especially with a kill-switch.\nRecovering access means removing the VPN's routes or stopping it: traffic then\nleaves outside the VPN. Answer no on hosts that must never leak traffic.\n")
-	if _, err := w.yesNo("allow_vpn_bypass", "May NetRiser bypass a full-tunnel VPN that cut this host off", w.cur.AllowVPNBypass); err != nil {
+	p.printf("If the VPN cuts the host off (its server is unreachable, a kill-switch blocks\neverything else), NetRiser can restore access by removing the VPN's routes or\nstopping it: traffic then leaves outside the VPN. Answer no if this host must\nnever send traffic outside the VPN, even at the cost of losing access.\n")
+	if _, err := w.yesNo("allow_vpn_bypass", "Is access to this host more important than keeping all traffic in the VPN", w.cur.AllowVPNBypass); err != nil {
 		return err
 	}
 	return w.customOverlays()

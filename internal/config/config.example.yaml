@@ -70,6 +70,15 @@ allowed_default_interfaces: []
 # kill-switch is lifted. Keep false on hosts that must never leak traffic.
 allow_vpn_bypass: false
 
+# Does this host route all of its own traffic through a VPN or exit node?
+#   false: only the physical uplink may carry the default route. A VPN, mesh
+#          exit node or tunnel that takes it over is removed immediately, even
+#          while the internet still works, and is not restarted.
+#   true:  the interfaces in allowed_default_interfaces carry it on purpose.
+#   empty: act on overlay default routes only when checks fail.
+# `netriser setup` asks this question.
+full_tunnel:
+
 # Overlay services that may be quarantined (stopped) at escalation stage 2.
 # "*" allows the service of any detected overlay that published a rogue route.
 monitored_services:

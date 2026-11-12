@@ -190,6 +190,31 @@ func (e *LinuxEngine) RemovePolicyRouting(ctx context.Context, b Baseline) error
 	return nil
 }
 
+// RogueDefaultRoutes implements RogueRouteDetector with the same route
+// selection as SurgicalCleanRoutes, read-only.
+func (e *LinuxEngine) RogueDefaultRoutes(ctx context.Context) ([]string, error) {
+	out, err := e.run(ctx, 3*time.Second, "ip", "-4", "route", "show", "default")
+	if err != nil {
+		return nil, err
+	}
+	var rogue []string
+	for _, r := range ParseLinuxRoutesText(out) {
+		if !e.cfg.IsAllowedDefaultInterface(r.Interface) && actionableUnixOverlay(e.cfg, r.Interface) {
+			rogue = append(rogue, "default on "+r.Interface)
+		}
+	}
+	for _, half := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		if halfOut, err := e.run(ctx, 2*time.Second, "ip", "-4", "route", "show", half); err == nil {
+			for _, r := range ParseLinuxRoutesText(halfOut) {
+				if actionableUnixOverlay(e.cfg, r.Interface) {
+					rogue = append(rogue, half+" on "+r.Interface)
+				}
+			}
+		}
+	}
+	return rogue, nil
+}
+
 func (e *LinuxEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]ActionResult, error) {
 	if err := validateLinuxBaseline(b); err != nil {
 		return nil, err

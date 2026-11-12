@@ -25,6 +25,9 @@ type ServiceQuarantineRecord struct {
 	// GaveUp is set after max_restore_attempts restarts that each cut
 	// connectivity again; the service is then left stopped.
 	GaveUp bool `json:"gave_up,omitempty"`
+	// Enforced marks a full-tunnel VPN stopped on a host configured without a
+	// full tunnel (full_tunnel: false); it is never restarted automatically.
+	Enforced bool `json:"enforced,omitempty"`
 }
 
 // WatchdogState represents the consolidated, versioned state of the watchdog.

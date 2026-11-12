@@ -153,6 +153,22 @@ adapter description):
 | Mesh overlay | NetBird, Tailscale/Headscale, ZeroTier, Nebula, Yggdrasil |
 | Full-tunnel VPN | WireGuard, OpenVPN (including DCO), IPsec (strongSwan, Libreswan, Windows IKEv2/L2TP/SSTP), Mullvad, NordVPN, Cloudflare WARP, ProtonVPN, Cisco AnyConnect, GlobalProtect, FortiClient, generic `tun`/`tap`/`utun` tunnels |
 
+NetRiser exists to keep a machine reachable. Internet access is the
+precondition for that, so it is restored first, except on a host that must
+never send traffic outside its VPN. `netriser setup` asks whether the host
+routes all of its traffic through a VPN or exit node and stores the answer as
+`full_tunnel`. Three modes follow:
+
+| Setup answers | A VPN or exit node holding the default route | When checks fail |
+| --- | --- | --- |
+| No full tunnel (`full_tunnel: false`) | Removed immediately, even while the internet works; a VPN stopped for this is not restarted | Overlay routes removed, services stopped |
+| Full tunnel, access first (`full_tunnel: true`, `allow_vpn_bypass: true`) | Allowed on `allowed_default_interfaces` | A VPN that cut the host off is stopped, then restarted at most `max_restore_attempts` times |
+| Full tunnel, privacy first (`full_tunnel: true`, `allow_vpn_bypass: false`) | Allowed | The VPN is never bypassed; only the uplink below it is repaired |
+
+Configurations without `full_tunnel` (before 1.3.2) keep the earlier
+behaviour: overlay routes are handled only when checks fail. `nr status` shows
+the active mode as "Default Route".
+
 A **mesh overlay** should never carry the host's default route. If it does (for
 example an exit node selected by mistake), NetRiser removes the route and, if
 needed, stops the overlay's service, then restarts it after recovery. List the

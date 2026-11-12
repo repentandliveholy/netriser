@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	Version   = "1.3.1"
+	Version   = "1.3.2"
 	Commit    = "unknown"
 	BuildTime = "unknown"
 )
@@ -36,6 +36,7 @@ type cliOptions struct {
 	installReboot     string
 	installObserve    string
 	installVPNBypass  string
+	installFullTunnel string
 	nonInteractive    bool
 	noRestart         bool
 	saveAnswers       string
@@ -56,6 +57,8 @@ func parseCLIArgs(args []string) cliOptions {
 			opts.installObserve = strings.TrimPrefix(arg, "--observation-mode=")
 		case strings.HasPrefix(arg, "--allow-vpn-bypass="):
 			opts.installVPNBypass = strings.TrimPrefix(arg, "--allow-vpn-bypass=")
+		case strings.HasPrefix(arg, "--full-tunnel="):
+			opts.installFullTunnel = strings.TrimPrefix(arg, "--full-tunnel=")
 		case arg == "--non-interactive":
 			opts.nonInteractive = true
 		case arg == "--no-restart":
@@ -149,6 +152,8 @@ Flags:
   --enable-reboot=bool  Select emergency reboot (with 'init-config')
   --observation-mode=bool  Log incidents only, no recovery (with 'setup', 'init-config')
   --allow-vpn-bypass=bool  Allow bypassing a full-tunnel VPN that cut the host off (with 'setup')
+  --full-tunnel=bool    Whether this host routes all traffic through a VPN; false removes
+                        any VPN or exit node that takes over the default route (with 'setup')
   --non-interactive     Ask no questions; apply only explicit settings (with 'setup')
   --save-answers=PATH   Ask the questions and save the answers without applying them (with 'setup')
   --answers=PATH        Apply previously saved answers without asking (with 'setup')

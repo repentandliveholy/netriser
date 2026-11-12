@@ -189,6 +189,7 @@ OBSERVE_CHOICE="$(normalize_choice NETRISER_OBSERVATION_MODE "${NETRISER_OBSERVA
 AUTO_CHOICE="$(normalize_choice NETRISER_AUTO_UPDATE "${NETRISER_AUTO_UPDATE:-}")"
 REBOOT_CHOICE="$(normalize_choice NETRISER_ENABLE_REBOOT "${NETRISER_ENABLE_REBOOT:-}")"
 BYPASS_CHOICE="$(normalize_choice NETRISER_ALLOW_VPN_BYPASS "${NETRISER_ALLOW_VPN_BYPASS:-}")"
+FULL_TUNNEL_CHOICE="$(normalize_choice NETRISER_FULL_TUNNEL "${NETRISER_FULL_TUNNEL:-}")"
 ANSWERS="$WORK/answers.yaml"
 # Questions are asked by the verified binary before anything is stopped or
 # changed; the answers are applied in step 7. Unix prompts use the terminal,
@@ -198,6 +199,7 @@ set -- "$STAGED" --config "$EFFECTIVE_CONFIG" setup "--save-answers=$ANSWERS"
 [ -z "$AUTO_CHOICE" ] || set -- "$@" "--auto-update=$AUTO_CHOICE"
 [ -z "$REBOOT_CHOICE" ] || set -- "$@" "--enable-reboot=$REBOOT_CHOICE"
 [ -z "$BYPASS_CHOICE" ] || set -- "$@" "--allow-vpn-bypass=$BYPASS_CHOICE"
+[ -z "$FULL_TUNNEL_CHOICE" ] || set -- "$@" "--full-tunnel=$FULL_TUNNEL_CHOICE"
 if [ "${NETRISER_NONINTERACTIVE:-0}" = 1 ] || ! ( : <>/dev/tty ) 2>/dev/null; then
   echo 'No interactive terminal: new installations start in observation mode; existing settings are kept unless NETRISER_* variables select them.'
   set -- "$@" --non-interactive

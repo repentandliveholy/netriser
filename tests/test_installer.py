@@ -218,16 +218,19 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
             "Use these internet probes": "y",
             "Enable automatic updates": "n",
             "Allow emergency host reboot": "y",
-            "May NetRiser bypass a full-tunnel VPN": "y",
+            "route all of its traffic through a VPN": "y",
+            "Interfaces allowed to carry the default route": "wg0",
+            "more important than keeping all traffic in the VPN": "y",
         })
         self.assertEqual(code, 0, output)
         for question in ("observation", "internet probes", "Mesh/VPN endpoints", "traffic through a VPN",
-                         "bypass a full-tunnel VPN", "does not recognise", "Stage 1", "Stage 2", "Stage 3",
+                         "Interfaces allowed", "more important than keeping all traffic", "does not recognise", "Stage 1", "Stage 2", "Stage 3",
                          "Uplink interface", "emergency host reboot", "Minimum continuous outage",
                          "automatic updates", "Save these settings"):
             self.assertTrue(any(question in a for a in asked), f"not asked: {question}\n{output}")
         config = self.config.read_text()
-        for line in ("observation_mode: false", "auto_update: false", "enable_reboot: true", "allow_vpn_bypass: true"):
+        for line in ("observation_mode: false", "auto_update: false", "enable_reboot: true", "allow_vpn_bypass: true",
+                     "full_tunnel: true", "- wg0"):
             self.assertIn(line, config)
 
     def test_rerun_offers_current_settings_and_cancel_changes_nothing(self):

@@ -102,3 +102,35 @@ func TestLinuxMonitoredServicesFilter(t *testing.T) {
 		t.Fatal("service outside monitored_services stopped")
 	}
 }
+
+func TestServiceKind(t *testing.T) {
+	cases := map[string]OverlayKind{
+		"WireGuardTunnel$wg-hetzner-ovs-server-1": KindVPN,
+		"wireguardtunnel$WG0":                     KindVPN,
+		"wg-quick@wg0":                            KindVPN,
+		"wg-quick@wg0.service":                    KindVPN,
+		"mullvad-daemon":                          KindVPN,
+		"tailscaled":                              KindMesh,
+		"Tailscale":                               KindMesh,
+		"ZeroTierOneService":                      KindMesh,
+		"adapter:Tailscale":                       KindMesh,
+		"adapter:wg-office":                       "",
+	}
+	for name, want := range cases {
+		got, ok := ServiceKind(name)
+		if want == "" {
+			if ok && got != KindVPN {
+				t.Errorf("%s: got %s", name, got)
+			}
+			continue
+		}
+		if !ok || got != want {
+			t.Errorf("%s: got %q %v, want %q", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"sshd", "wg-quick@", "WireGuardTunnel$", "nginx"} {
+		if kind, ok := ServiceKind(name); ok {
+			t.Errorf("%s classified as %s", name, kind)
+		}
+	}
+}

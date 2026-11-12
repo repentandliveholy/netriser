@@ -136,8 +136,53 @@ func ClassifyWindows(alias, description string) (Overlay, bool) {
 
 // Actionable reports whether recovery may remove routes of, or stop, this
 // overlay: mesh overlays always, full-tunnel VPNs only with allow_vpn_bypass.
+// On a host declared without a full tunnel every overlay is actionable.
 func (o Overlay) Actionable(cfg *config.Config) bool {
-	return o.Kind == KindMesh || (cfg != nil && cfg.AllowVPNBypass)
+	return o.Kind == KindMesh || (cfg != nil && (cfg.AllowVPNBypass || cfg.UplinkOnly()))
+}
+
+// ServiceKind returns the kind of overlay owning a service name that recovery
+// stopped: a Linux unit, a Windows service, or a disabled Windows adapter
+// ("adapter:<alias>"). Service names are distinctive enough to check both
+// platforms' lists. ok is false for unknown services.
+func ServiceKind(service string) (OverlayKind, bool) {
+	if alias, found := strings.CutPrefix(service, WindowsAdapterTargetPrefix); found {
+		if o, ok := ClassifyWindows(alias, ""); ok {
+			return o.Kind, true
+		}
+		return "", false
+	}
+	unit := strings.TrimSuffix(service, ".service")
+	for _, o := range *overlays.Load() {
+		for _, tmpl := range o.LinuxServices {
+			if serviceMatches(false, tmpl, unit) {
+				return o.Kind, true
+			}
+		}
+		for _, tmpl := range o.WindowsServices {
+			if serviceMatches(true, tmpl, service) {
+				return o.Kind, true
+			}
+		}
+	}
+	return "", false
+}
+
+// serviceMatches compares a service template ("{iface}" is a wildcard) with a
+// name; Windows service names are case-insensitive.
+func serviceMatches(windows bool, tmpl, name string) bool {
+	eq := func(a, b string) bool { return a == b }
+	prefix := strings.HasPrefix
+	if windows {
+		eq = strings.EqualFold
+		prefix = func(s, p string) bool { return len(s) >= len(p) && strings.EqualFold(s[:len(p)], p) }
+	}
+	before, after, wildcard := strings.Cut(tmpl, "{iface}")
+	if !wildcard {
+		return eq(tmpl, name)
+	}
+	return len(name) > len(before)+len(after) && prefix(name, before) &&
+		eq(name[len(name)-len(after):], after)
 }
 
 // Services returns the overlay's service names for an interface on goos.

@@ -20,6 +20,7 @@ func NewEngine(cfg *config.Config) NetworkEngine {
 }
 
 func NewEngineWithRunner(cfg *config.Config, runner CommandRunner) NetworkEngine {
+	ConfigureOverlays(cfg)
 	if runner == nil {
 		runner = &DefaultCommandRunner{}
 	}

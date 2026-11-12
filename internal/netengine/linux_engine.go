@@ -215,7 +215,7 @@ func (e *LinuxEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]Ac
 			continue
 		}
 
-		if r.Interface != "" && IsMeshInterface(r.Interface) {
+		if actionableUnixOverlay(e.cfg, r.Interface) {
 			res := ActionResult{
 				Type:        ActionCleanRoute,
 				Target:      fmt.Sprintf("default dev %s", r.Interface),
@@ -238,7 +238,7 @@ func (e *LinuxEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]Ac
 		if err == nil && strings.TrimSpace(halfOut) != "" {
 			halfRoutes := ParseLinuxRoutesText(halfOut)
 			for _, hr := range halfRoutes {
-				if hr.Interface != "" && IsMeshInterface(hr.Interface) && !e.cfg.IsAllowedDefaultInterface(hr.Interface) {
+				if actionableUnixOverlay(e.cfg, hr.Interface) {
 					res := ActionResult{
 						Type:        ActionCleanRoute,
 						Target:      fmt.Sprintf("%s dev %s", halfRoute, hr.Interface),
@@ -263,7 +263,7 @@ func (e *LinuxEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]Ac
 			continue
 		}
 		for _, r := range ParseLinuxRoutesText(out) {
-			if !IsMeshInterface(r.Interface) || e.cfg.IsAllowedDefaultInterface(r.Interface) {
+			if !actionableUnixOverlay(e.cfg, r.Interface) {
 				continue
 			}
 			act := ActionResult{Type: ActionCleanRoute, Target: fmt.Sprintf("default dev %s table %s", r.Interface, table), Status: ActionExecuted, Description: "Removed unauthorized overlay default from policy table"}
@@ -323,7 +323,8 @@ func (e *LinuxEngine) QuarantineMeshServices(ctx context.Context) ([]ActionResul
 	if !strings.Contains(","+flags+",", ",UP,") {
 		return nil, fmt.Errorf("WAN interface %s is down; preserving overlays", b.Interface)
 	}
-	suspects := map[string]bool{}
+	var suspects []string
+	seen := map[string]bool{}
 	routes := e.defaultRoutes(ctx)
 	for _, dst := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
 		out, err := e.run(ctx, 2*time.Second, "ip", "-4", "route", "show", dst)
@@ -338,23 +339,20 @@ func (e *LinuxEngine) QuarantineMeshServices(ctx context.Context) ([]ActionResul
 		}
 	}
 	for _, r := range routes {
-		if e.cfg.IsAllowedDefaultInterface(r.Interface) {
+		if !actionableUnixOverlay(e.cfg, r.Interface) {
 			continue
 		}
-		switch {
-		case strings.HasPrefix(r.Interface, "wt"):
-			suspects["netbird"], suspects["netbird-client"] = true, true
-		case strings.HasPrefix(r.Interface, "tailscale"):
-			suspects["tailscaled"] = true
-		case strings.HasPrefix(r.Interface, "nebula"):
-			suspects["nebula"] = true
-		case strings.HasPrefix(r.Interface, "zt"):
-			suspects["zerotier-one"] = true
+		o, _ := ClassifyUnix(r.Interface)
+		for _, svc := range o.Services("linux", r.Interface) {
+			if !seen[svc] {
+				seen[svc] = true
+				suspects = append(suspects, svc)
+			}
 		}
 	}
 	var actions []ActionResult
-	for _, name := range e.cfg.MonitoredServices {
-		if !suspects[name] {
+	for _, name := range suspects {
+		if !e.cfg.MonitorsService(name) {
 			continue
 		}
 		if _, err := e.run(ctx, 2*time.Second, "systemctl", "is-active", "--quiet", name); err != nil {

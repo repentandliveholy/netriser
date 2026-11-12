@@ -5,22 +5,28 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/repentandliveholy/netriser/internal/config"
 )
 
 // Platform-independent Windows overlay logic. It is kept outside the
 // windows-tagged engine so that it is unit-tested on every CI platform.
 
-// windowsOverlayRegex matches virtual adapters that must never be selected as
-// the physical baseline (including Hyper-V virtual switches).
-var windowsOverlayRegex = regexp.MustCompile(`(?i)(netbird|wt[0-9]|zerotier|zt[a-z0-9]|tailscale|nebula|wireguard|wintun|tap-windows|openvpn|hyper-v|vethernet)`)
-
-// windowsRogueOverlayRegex matches VPN and mesh adapters whose default route is
-// treated as rogue. Hyper-V switches are excluded: they legitimately carry the
-// physical uplink on hosts that use an external virtual switch.
-var windowsRogueOverlayRegex = regexp.MustCompile(`(?i)(netbird|^wt[0-9]|zerotier|^zt[a-z0-9]|tailscale|nebula|wireguard|wintun|tap-windows|openvpn)`)
+// windowsHyperVRegex matches Hyper-V virtual switches. They are never chosen as
+// the physical baseline but are not overlays either: on hosts with an external
+// virtual switch they legitimately carry the physical uplink.
+var windowsHyperVRegex = regexp.MustCompile(`(?i)hyper-v|vethernet`)
 
 var windowsWireGuardRegex = regexp.MustCompile(`(?i)wireguard`)
-var windowsNetbirdAliasRegex = regexp.MustCompile(`(?i)^wt[0-9]`)
+
+// isWindowsVirtualAdapter reports adapters that must never be selected as the
+// physical baseline: any recognised overlay and Hyper-V switches.
+func isWindowsVirtualAdapter(alias, description string) bool {
+	if _, ok := ClassifyWindows(alias, description); ok {
+		return true
+	}
+	return windowsHyperVRegex.MatchString(alias) || windowsHyperVRegex.MatchString(description)
+}
 
 // WindowsWireGuardServicePrefix is the service name prefix used by WireGuard
 // for Windows: each active tunnel runs as WireGuardTunnel$<tunnel name>, and
@@ -72,8 +78,13 @@ func (r WindowsRoute) IsWindowsWireGuard() bool {
 	return windowsWireGuardRegex.MatchString(r.Description) || windowsWireGuardRegex.MatchString(r.Alias)
 }
 
+func (r WindowsRoute) overlay() (Overlay, bool) {
+	return ClassifyWindows(r.Alias, r.Description)
+}
+
 func (r WindowsRoute) isOverlay() bool {
-	return windowsRogueOverlayRegex.MatchString(r.Alias) || windowsRogueOverlayRegex.MatchString(r.Description)
+	_, ok := r.overlay()
+	return ok
 }
 
 // WindowsRogueRoutes returns overlay default routes that capture traffic and
@@ -81,8 +92,9 @@ func (r WindowsRoute) isOverlay() bool {
 // route with a worse effective metric than the physical default route (for
 // example ZeroTier's metric 9999 route) carries no traffic and is left alone.
 // Split /1 routes always win over /0, and WireGuard is always suspect because
-// its kill-switch blocks untunneled traffic regardless of metrics.
-func WindowsRogueRoutes(routes []WindowsRoute, allowed func(string) bool) []WindowsRoute {
+// its kill-switch blocks untunneled traffic regardless of metrics. Full-tunnel
+// VPNs are only considered with allow_vpn_bypass.
+func WindowsRogueRoutes(routes []WindowsRoute, cfg *config.Config) []WindowsRoute {
 	physicalBest := math.MaxInt
 	for _, r := range routes {
 		if r.Prefix == "0.0.0.0/0" && !r.isOverlay() && r.Metric >= 0 && r.Metric < physicalBest {
@@ -91,7 +103,8 @@ func WindowsRogueRoutes(routes []WindowsRoute, allowed func(string) bool) []Wind
 	}
 	var rogue []WindowsRoute
 	for _, r := range routes {
-		if (allowed != nil && allowed(r.Alias)) || !r.isOverlay() {
+		o, ok := r.overlay()
+		if !ok || !o.Actionable(cfg) || (cfg != nil && cfg.IsAllowedDefaultInterface(r.Alias)) {
 			continue
 		}
 		if r.Prefix == "0.0.0.0/0" && !r.IsWindowsWireGuard() && r.Metric > physicalBest {
@@ -105,18 +118,10 @@ func WindowsRogueRoutes(routes []WindowsRoute, allowed func(string) bool) []Wind
 // WindowsOverlayService returns the Windows service that owns an overlay
 // interface, or "" when it is unknown and only the adapter can be disabled.
 func WindowsOverlayService(r WindowsRoute) string {
-	text := strings.ToLower(r.Alias + " " + r.Description)
-	switch {
-	case r.IsWindowsWireGuard():
-		return WindowsWireGuardServicePrefix + r.Alias
-	case strings.Contains(text, "tailscale"):
-		return "Tailscale"
-	case strings.Contains(text, "zerotier") || strings.HasPrefix(strings.ToLower(r.Alias), "zt"):
-		return "ZeroTierOneService"
-	case strings.Contains(text, "netbird") || windowsNetbirdAliasRegex.MatchString(r.Alias):
-		return "netbird"
-	case strings.Contains(text, "nebula"):
-		return "nebula"
+	if o, ok := r.overlay(); ok {
+		if services := o.Services("windows", r.Alias); len(services) > 0 {
+			return services[0]
+		}
 	}
 	return ""
 }

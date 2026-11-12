@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,14 +37,18 @@ type FileEntry struct {
 
 // UpdateInfo holds details about an update evaluation.
 type UpdateInfo struct {
-	CurrentVersion  string    `json:"current_version"`
-	CurrentCommit   string    `json:"current_commit"`
-	LatestVersion   string    `json:"latest_version"`
-	LatestCommit    string    `json:"latest_commit"`
-	UpdateAvailable bool      `json:"update_available"`
-	PlatformKey     string    `json:"platform_key"`
-	TargetFile      FileEntry `json:"target_file"`
-	DownloadURL     string    `json:"download_url"`
+	CurrentVersion  string `json:"current_version"`
+	CurrentCommit   string `json:"current_commit"`
+	LatestVersion   string `json:"latest_version"`
+	LatestCommit    string `json:"latest_commit"`
+	UpdateAvailable bool   `json:"update_available"`
+	// Downgrade is true when the published release is older than the running
+	// one. Downgrades are never applied, even with --force: an attacker who
+	// replays an old signed manifest must not reinstall a vulnerable release.
+	Downgrade   bool      `json:"downgrade,omitempty"`
+	PlatformKey string    `json:"platform_key"`
+	TargetFile  FileEntry `json:"target_file"`
+	DownloadURL string    `json:"download_url"`
 }
 
 // Updater handles checking and applying self-updates.
@@ -52,13 +57,19 @@ type Updater struct {
 	httpClient *http.Client
 	targetOS   string
 	targetArch string
+	keys       []ed25519.PublicKey
+	keysErr    error
 }
+
+// maxManifestBytes bounds the manifest and signature downloads.
+const maxManifestBytes = 1 << 20
 
 // New creates a new Updater instance with the specified base distribution URL.
 func New(baseURL string) *Updater {
 	if !strings.HasSuffix(baseURL, "/") {
 		baseURL += "/"
 	}
+	keys, err := TrustedKeys(nil)
 	return &Updater{
 		baseURL: baseURL,
 		httpClient: &http.Client{
@@ -66,7 +77,49 @@ func New(baseURL string) *Updater {
 		},
 		targetOS:   runtime.GOOS,
 		targetArch: runtime.GOARCH,
+		keys:       keys,
+		keysErr:    err,
 	}
+}
+
+// SetTrustedKeys trusts the built-in release keys plus extra base64 Ed25519
+// public keys (update_public_keys), for example a corporate mirror's key.
+func (u *Updater) SetTrustedKeys(extra []string) error {
+	keys, err := TrustedKeys(extra)
+	if err != nil {
+		return err
+	}
+	u.keys, u.keysErr = keys, nil
+	return nil
+}
+
+// setKeysForTest replaces every trusted key.
+func (u *Updater) setKeysForTest(keys ...ed25519.PublicKey) {
+	u.keys, u.keysErr = keys, nil
+}
+
+func (u *Updater) fetch(ctx context.Context, rawURL, currentVersion string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct request: %w", err)
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf("netriser/%s (%s/%s)", currentVersion, u.targetOS, u.targetArch))
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("update server returned HTTP %d for %s", resp.StatusCode, rawURL)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", rawURL, err)
+	}
+	if len(data) > maxManifestBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", rawURL, maxManifestBytes)
+	}
+	return data, nil
 }
 
 // SetTargetPlatform overrides target OS/Arch (primarily for testing).
@@ -82,25 +135,27 @@ func (u *Updater) SetHTTPClient(client *http.Client) {
 
 // Check queries the update manifest and determines whether an update is available.
 func (u *Updater) Check(ctx context.Context, currentVersion, currentCommit string) (*UpdateInfo, error) {
+	if u.keysErr != nil {
+		return nil, u.keysErr
+	}
 	manifestURL := u.resolveURL("version.json")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	data, err := u.fetch(ctx, manifestURL, currentVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct manifest request: %w", err)
+		return nil, fmt.Errorf("update manifest: %w", err)
 	}
-	req.Header.Set("User-Agent", fmt.Sprintf("netriser/%s (%s/%s)", currentVersion, u.targetOS, u.targetArch))
-
-	resp, err := u.httpClient.Do(req)
+	// The manifest carries the binary checksums, so its signature authenticates
+	// the binaries too. A compromised or spoofed distribution host cannot
+	// publish an update without the offline release key.
+	signature, err := u.fetch(ctx, u.resolveURL(ManifestSignatureName), currentVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch update manifest from %s: %w", manifestURL, err)
+		return nil, fmt.Errorf("%w: cannot fetch %s: %v", ErrUnsigned, ManifestSignatureName, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("update server returned HTTP %d for %s", resp.StatusCode, manifestURL)
+	if err := VerifySignature(data, signature, u.keys); err != nil {
+		return nil, fmt.Errorf("refusing update from %s: %w", manifestURL, err)
 	}
 
 	var m Manifest
-	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("failed to parse update manifest JSON: %w", err)
 	}
 
@@ -116,6 +171,7 @@ func (u *Updater) Check(ctx context.Context, currentVersion, currentCommit strin
 	}
 
 	updateAvailable := isNewerVersion(currentVersion, currentCommit, m.Version, m.Commit)
+	downgrade := isOlderVersion(currentVersion, m.Version)
 
 	return &UpdateInfo{
 		CurrentVersion:  currentVersion,
@@ -123,6 +179,7 @@ func (u *Updater) Check(ctx context.Context, currentVersion, currentCommit strin
 		LatestVersion:   m.Version,
 		LatestCommit:    m.Commit,
 		UpdateAvailable: updateAvailable,
+		Downgrade:       downgrade,
 		PlatformKey:     platformKey,
 		TargetFile:      fileEntry,
 		DownloadURL:     downloadURL,
@@ -133,6 +190,9 @@ func (u *Updater) Check(ctx context.Context, currentVersion, currentCommit strin
 func (u *Updater) Apply(ctx context.Context, targetExecPath string, info *UpdateInfo) error {
 	if info == nil {
 		return fmt.Errorf("missing update metadata")
+	}
+	if info.Downgrade {
+		return fmt.Errorf("refusing to downgrade from %s to %s", info.CurrentVersion, info.LatestVersion)
 	}
 	expectedHash := strings.ToLower(strings.TrimSpace(info.TargetFile.SHA256))
 	hashBytes, err := hex.DecodeString(expectedHash)
@@ -248,6 +308,21 @@ func isNewerVersion(currVer, currCommit, latestVer, latestCommit string) bool {
 	}
 	return currCommit != "" && latestCommit != "" && currCommit != "unknown" && latestCommit != "unknown" &&
 		!strings.HasPrefix(currCommit, latestCommit) && !strings.HasPrefix(latestCommit, currCommit)
+}
+
+// isOlderVersion reports whether latest is a lower numbered release than current.
+func isOlderVersion(current, latest string) bool {
+	c, cOK := numericVersion(current)
+	l, lOK := numericVersion(latest)
+	if !cOK || !lOK {
+		return false
+	}
+	for i := range c {
+		if l[i] != c[i] {
+			return l[i] < c[i]
+		}
+	}
+	return false
 }
 
 func numericVersion(value string) ([3]uint64, bool) {

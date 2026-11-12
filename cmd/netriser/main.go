@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	Version   = "1.2.6"
+	Version   = "1.3.0"
 	Commit    = "unknown"
 	BuildTime = "unknown"
 )
@@ -35,6 +35,11 @@ type cliOptions struct {
 	installAutoUpdate string
 	installReboot     string
 	installObserve    string
+	installVPNBypass  string
+	nonInteractive    bool
+	noRestart         bool
+	saveAnswers       string
+	answers           string
 	commands          []string
 }
 
@@ -49,6 +54,16 @@ func parseCLIArgs(args []string) cliOptions {
 			opts.installReboot = strings.TrimPrefix(arg, "--enable-reboot=")
 		case strings.HasPrefix(arg, "--observation-mode="):
 			opts.installObserve = strings.TrimPrefix(arg, "--observation-mode=")
+		case strings.HasPrefix(arg, "--allow-vpn-bypass="):
+			opts.installVPNBypass = strings.TrimPrefix(arg, "--allow-vpn-bypass=")
+		case arg == "--non-interactive":
+			opts.nonInteractive = true
+		case arg == "--no-restart":
+			opts.noRestart = true
+		case strings.HasPrefix(arg, "--save-answers="):
+			opts.saveAnswers = strings.TrimPrefix(arg, "--save-answers=")
+		case strings.HasPrefix(arg, "--answers="):
+			opts.answers = strings.TrimPrefix(arg, "--answers=")
 		case arg == "-h" || arg == "--help":
 			opts.help = true
 		case arg == "-v" || arg == "--verbose":
@@ -95,6 +110,7 @@ Usage:
   netriser [flags] <command> [subcommand]
 
 Commands:
+  setup              Answer the installation questions again and apply them
   start              Start background watchdog service
   stop               Stop background watchdog service
   restart            Restart background watchdog service
@@ -113,6 +129,7 @@ Commands:
   simulate-hijack    Safely test route hijack remediation (with 45s safety rollback)
   migrate            Preserve legacy configuration and state paths
   init-config        Create configuration; preserve existing settings unless overridden
+                     (non-interactive; use 'setup' to be asked every question)
   service <cmd>      Manage OS service (install, uninstall, start, stop, restart, status)
   apply-policy       Enforce management policy routing (Table 200 on Linux)
   remove-policy      Remove custom management policy routing rules
@@ -128,7 +145,12 @@ Flags:
   --update-url string   Override update server base URL (with 'update')
   --auto-update=bool    Select automatic updates (with 'init-config')
   --enable-reboot=bool  Select emergency reboot (with 'init-config')
-  --observation-mode=bool  Log incidents only, no recovery (with 'init-config')
+  --observation-mode=bool  Log incidents only, no recovery (with 'setup', 'init-config')
+  --allow-vpn-bypass=bool  Allow bypassing a full-tunnel VPN that cut the host off (with 'setup')
+  --non-interactive     Ask no questions; apply only explicit settings (with 'setup')
+  --save-answers=PATH   Ask the questions and save the answers without applying them (with 'setup')
+  --answers=PATH        Apply previously saved answers without asking (with 'setup')
+  --no-restart          Do not restart a running service after changes (with 'setup')
   -v, --verbose         Enable verbose console logging (routed to stderr with --json)
   -h, --help            Show this help message
   -V, --version         Print version information
@@ -164,6 +186,9 @@ func main() {
 		}
 		fmt.Println("Legacy configuration preserved. Install the NetRiser service after stopping the legacy daemon.")
 		return
+	}
+	if cmd == "setup" || cmd == "configure" {
+		os.Exit(runSetup(opts))
 	}
 	if cmd == "init-config" {
 		autoUpdate, err := optionalBool(opts.installAutoUpdate)
@@ -670,6 +695,10 @@ func main() {
 		}
 
 		up := updater.New(baseURL)
+		if err := up.SetTrustedKeys(cfg.UpdatePublicKeys); err != nil {
+			fmt.Fprintf(os.Stderr, "Update keys: %v\n", err)
+			os.Exit(1)
+		}
 		info, err := up.Check(ctx, Version, Commit)
 		if err != nil {
 			if opts.jsonOutput {
@@ -686,8 +715,10 @@ func main() {
 				fmt.Println(string(data))
 			} else {
 				fmt.Printf("Current version: %s (commit: %s)\n", info.CurrentVersion, info.CurrentCommit)
-				fmt.Printf("Latest version:  %s (commit: %s)\n", info.LatestVersion, info.LatestCommit)
-				if info.UpdateAvailable {
+				fmt.Printf("Latest version:  %s (commit: %s, signature verified)\n", info.LatestVersion, info.LatestCommit)
+				if info.Downgrade {
+					fmt.Println("Status: The published release is older than this build; downgrades are never installed.")
+				} else if info.UpdateAvailable {
 					fmt.Println("Status: Update is AVAILABLE! Run 'netriser update' to install.")
 				} else {
 					fmt.Println("Status: Already running the latest version.")
@@ -696,6 +727,10 @@ func main() {
 			os.Exit(0)
 		}
 
+		if info.Downgrade {
+			fmt.Fprintf(os.Stderr, "Refusing to downgrade from %s to %s.\n", info.CurrentVersion, info.LatestVersion)
+			os.Exit(1)
+		}
 		if !info.UpdateAvailable && !opts.force {
 			if opts.jsonOutput {
 				data, _ := json.MarshalIndent(map[string]any{

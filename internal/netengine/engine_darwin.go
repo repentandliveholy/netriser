@@ -26,6 +26,7 @@ func NewEngine(cfg *config.Config) NetworkEngine {
 }
 
 func NewEngineWithRunner(cfg *config.Config, runner CommandRunner) NetworkEngine {
+	ConfigureOverlays(cfg)
 	if runner == nil {
 		runner = &DefaultCommandRunner{}
 	}
@@ -167,8 +168,10 @@ func (e *DarwinEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]A
 				gw := fields[1]
 				iface := fields[3]
 
-				// Detect rogue NetBird /1 half-space routes (0/1 or 128.0/1)
-				if (dest == "0/1" || dest == "128.0/1" || dest == "0.0.0.0/1" || dest == "128.0.0.0/1") && IsMeshInterface(iface) && !e.cfg.IsAllowedDefaultInterface(iface) {
+				overlay := IsMeshInterface(iface)
+				// Detect rogue /1 half-space routes (0/1 or 128.0/1) on overlays
+				// recovery may touch; full-tunnel VPNs need allow_vpn_bypass.
+				if isDarwinHalfRoute(dest) && actionableUnixOverlay(e.cfg, iface) {
 					res := ActionResult{
 						Type:        ActionCleanRoute,
 						Target:      fmt.Sprintf("%s via %s", dest, iface),
@@ -180,7 +183,8 @@ func (e *DarwinEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]A
 						res.Error = rErr.Error()
 					}
 					actions = append(actions, res)
-				} else if dest == "default" && !e.cfg.IsAllowedDefaultInterface(iface) && (IsMeshInterface(iface) || (b.Gateway != "" && gw != b.Gateway && !strings.HasPrefix(gw, "link#"))) {
+				} else if dest == "default" && !e.cfg.IsAllowedDefaultInterface(iface) &&
+					((overlay && actionableUnixOverlay(e.cfg, iface)) || (!overlay && b.Gateway != "" && gw != b.Gateway && !strings.HasPrefix(gw, "link#"))) {
 					res := ActionResult{
 						Type:        ActionCleanRoute,
 						Target:      fmt.Sprintf("default via %s (%s)", gw, iface),
@@ -198,12 +202,7 @@ func (e *DarwinEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]A
 		}
 	}
 
-	// 2. Explicit flush of rogue /1 routes
-	for _, half := range []string{"0/1", "128.0/1", "0.0.0.0/1", "128.0.0.0/1"} {
-		_, _ = e.run(ctx, 2*time.Second, "route", "-n", "delete", half)
-	}
-
-	// 3. Re-assert physical interface link UP and default route
+	// 2. Re-assert physical interface link UP and default route
 	if b.Interface != "" {
 		_, _ = e.run(ctx, 2*time.Second, "ifconfig", b.Interface, "up")
 	}
@@ -224,15 +223,41 @@ func (e *DarwinEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]A
 		actions = append(actions, res)
 	}
 
-	// 4. Flush DNS cache
+	// 3. Flush DNS cache
 	_, _ = e.run(ctx, 2*time.Second, "dscacheutil", "-flushcache")
 	_, _ = e.run(ctx, 2*time.Second, "killall", "-HUP", "mDNSResponder")
 
 	return actions, nil
 }
 
+func isDarwinHalfRoute(dest string) bool {
+	return dest == "0/1" || dest == "128.0/1" || dest == "0.0.0.0/1" || dest == "128.0.0.0/1"
+}
+
+// darwinRogueRoutes lists default and /1 routes of overlays recovery may touch.
+func (e *DarwinEngine) darwinRogueRoutes(ctx context.Context) []DarwinRouteEntry {
+	out, err := e.run(ctx, 3*time.Second, "netstat", "-rn", "-f", "inet")
+	if err != nil {
+		return nil
+	}
+	var rogue []DarwinRouteEntry
+	for _, r := range ParseDarwinNetstat(out) {
+		if (r.Destination == "default" || isDarwinHalfRoute(r.Destination)) && actionableUnixOverlay(e.cfg, r.Interface) {
+			rogue = append(rogue, r)
+		}
+	}
+	return rogue
+}
+
+// QuarantineMeshServices requires current evidence: an overlay that recovery
+// may touch publishes a default or /1 route. macOS VPN clients share utun
+// interface names, so the known NetBird and Tailscale clients are disconnected.
 func (e *DarwinEngine) QuarantineMeshServices(ctx context.Context) ([]ActionResult, error) {
 	var actions []ActionResult
+	rogue := e.darwinRogueRoutes(ctx)
+	if len(rogue) == 0 {
+		return []ActionResult{{Type: ActionQuarantineService, Target: "all", Status: ActionSkipped, Description: "No overlay route evidence; preserving overlays"}}, nil
+	}
 
 	// 1. NetBird down: cleanly release exit-node routes and interface
 	for _, nbCli := range []string{
@@ -271,9 +296,11 @@ func (e *DarwinEngine) QuarantineMeshServices(ctx context.Context) ([]ActionResu
 		}
 	}
 
-	// 3. Delete rogue /1 routes
-	for _, half := range []string{"0/1", "128.0/1", "0.0.0.0/1", "128.0.0.0/1"} {
-		_, _ = e.run(ctx, 2*time.Second, "route", "-n", "delete", half)
+	// 3. Delete the rogue /1 routes found above
+	for _, r := range rogue {
+		if isDarwinHalfRoute(r.Destination) {
+			_, _ = e.run(ctx, 2*time.Second, "route", "-n", "delete", r.Destination)
+		}
 	}
 
 	// 4. Flush macOS DNS cache

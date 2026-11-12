@@ -2,8 +2,10 @@ package config
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -42,8 +44,13 @@ type Config struct {
 	PolicyRoutingTable    int `yaml:"policy_routing_table"`
 	PolicyRoutingPriority int `yaml:"policy_routing_priority"`
 
-	// Monitored overlay services
+	// Overlay services eligible for quarantine; "*" means any service that
+	// belongs to a detected overlay (built-in or listed in overlays).
 	MonitoredServices []string `yaml:"monitored_services"`
+
+	// Additional VPN/overlay definitions for protocols NetRiser does not
+	// recognise by itself. Checked before the built-in definitions.
+	Overlays []OverlayConfig `yaml:"overlays"`
 
 	// Escalation thresholds (consecutive failures)
 	FailThresholdStage1       int `yaml:"fail_threshold_stage1"`
@@ -57,6 +64,11 @@ type Config struct {
 	AllowServiceQuarantine   bool     `yaml:"allow_service_quarantine"`
 	AllowNetworkRestart      bool     `yaml:"allow_network_restart"`
 	AllowedDefaultInterfaces []string `yaml:"allowed_default_interfaces"`
+	// AllowVPNBypass permits removing the routes of, or stopping, a full-tunnel
+	// VPN (WireGuard, OpenVPN, IPsec, commercial VPN clients) that cut the host
+	// off. Traffic then leaves outside the VPN and a kill-switch is lifted, so
+	// it is off for new installations. Mesh overlays are not affected.
+	AllowVPNBypass bool `yaml:"allow_vpn_bypass"`
 
 	// Emergency reboot settings
 	EnableReboot          bool `yaml:"enable_reboot"`
@@ -77,6 +89,45 @@ type Config struct {
 	UpdateURL             string `yaml:"update_url"`
 	AutoUpdate            bool   `yaml:"auto_update"`
 	AutoUpdateIntervalSec int    `yaml:"auto_update_interval_sec"`
+	// UpdatePublicKeys are extra trusted Ed25519 release keys (base64), for a
+	// self-hosted or corporate mirror that signs its own manifests.
+	UpdatePublicKeys []string `yaml:"update_public_keys"`
+}
+
+// OverlayConfig describes a VPN or overlay network by its interface names.
+type OverlayConfig struct {
+	Name string `yaml:"name"`
+	// Interface is a regular expression matched against interface names (on
+	// Windows also against the adapter description).
+	Interface string `yaml:"interface"`
+	// Kind is "vpn" (full tunnel; touched only with allow_vpn_bypass) or
+	// "mesh" (overlay that should never carry the default route). Default: vpn.
+	Kind string `yaml:"kind"`
+	// Services stopped on quarantine and restarted after recovery (systemd
+	// units on Linux, service names on Windows). "{iface}" expands to the
+	// interface name, for example "wg-quick@{iface}".
+	Services []string `yaml:"services"`
+}
+
+// legacySettingDefaults are the values of settings introduced with safer defaults,
+// applied when an existing configuration file does not mention them. They keep
+// the behaviour of installations created before the setting existed.
+var legacySettingDefaults = map[string]func(*Config){
+	"observation_mode": func(c *Config) { c.ObservationMode = false },
+	"allow_vpn_bypass": func(c *Config) { c.AllowVPNBypass = true },
+	"monitored_services": func(c *Config) {
+		c.MonitoredServices = []string{"netbird", "netbird-client", "zerotier-one", "nebula", "tailscaled"}
+	},
+}
+
+// MonitorsService reports whether a service may be quarantined.
+func (c *Config) MonitorsService(name string) bool {
+	for _, s := range c.MonitoredServices {
+		if s == "*" || s == name {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultConfig returns safe defaults tailored for the host OS.
@@ -87,33 +138,30 @@ func DefaultConfig() *Config {
 			"8.8.8.8:53",
 			"9.9.9.9:53",
 		},
-		HTTPFallbackURL:       "http://1.1.1.1",
-		DNSCanaries:           []string{"example.com", "iana.org"},
-		AllowDNSRecovery:      true,
-		MinHealthyTargets:     2,
-		MeshCanaries:          []string{},
-		CheckIntervalSec:      60,
-		RecoveryIntervalSec:   15,
-		ProbeTimeoutSec:       3,
-		ManagementInterface:   "",
-		ManagementGateway:     "",
-		PolicyRoutingTable:    200,
-		PolicyRoutingPriority: 100,
-		MonitoredServices: []string{
-			"netbird",
-			"netbird-client",
-			"zerotier-one",
-			"nebula",
-			"tailscaled",
-		},
+		HTTPFallbackURL:           "http://1.1.1.1",
+		DNSCanaries:               []string{"example.com", "iana.org"},
+		AllowDNSRecovery:          true,
+		MinHealthyTargets:         2,
+		MeshCanaries:              []string{},
+		CheckIntervalSec:          60,
+		RecoveryIntervalSec:       15,
+		ProbeTimeoutSec:           3,
+		ManagementInterface:       "",
+		ManagementGateway:         "",
+		PolicyRoutingTable:        200,
+		PolicyRoutingPriority:     100,
+		MonitoredServices:         []string{"*"},
+		Overlays:                  []OverlayConfig{},
 		FailThresholdStage1:       1,
 		FailThresholdStage2:       2,
 		FailThresholdStage3:       3,
 		FailThresholdStage4Reboot: 5,
-		ObservationMode:           false,
+		ObservationMode:           true, // New installations start read-only.
 		AllowRouteSanitation:      true,
 		AllowServiceQuarantine:    true,
 		AllowNetworkRestart:       true,
+		AllowedDefaultInterfaces:  []string{},
+		AllowVPNBypass:            false,
 		EnableReboot:              false, // Safe default: disabled by default
 		RebootMinOutageSec:        300,
 		RebootGraceSec:            15,
@@ -124,6 +172,7 @@ func DefaultConfig() *Config {
 		UpdateURL:                 "https://netriser.repentandliveholy.org",
 		AutoUpdate:                true,
 		AutoUpdateIntervalSec:     21600,
+		UpdatePublicKeys:          []string{},
 	}
 
 	switch runtime.GOOS {
@@ -288,6 +337,32 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("update_url must start with http:// or https://, got %q", c.UpdateURL)
 	}
 
+	for i, o := range c.Overlays {
+		if strings.TrimSpace(o.Name) == "" {
+			return fmt.Errorf("overlays[%d]: name is required", i)
+		}
+		if strings.TrimSpace(o.Interface) == "" {
+			return fmt.Errorf("overlays[%d] (%s): interface pattern is required", i, o.Name)
+		}
+		if _, err := regexp.Compile(o.Interface); err != nil {
+			return fmt.Errorf("overlays[%d] (%s): invalid interface pattern: %w", i, o.Name, err)
+		}
+		if o.Kind != "" && o.Kind != "vpn" && o.Kind != "mesh" {
+			return fmt.Errorf("overlays[%d] (%s): kind must be vpn or mesh, got %q", i, o.Name, o.Kind)
+		}
+		for _, svc := range o.Services {
+			if strings.TrimSpace(svc) == "" {
+				return fmt.Errorf("overlays[%d] (%s): empty service name", i, o.Name)
+			}
+		}
+	}
+	for _, k := range c.UpdatePublicKeys {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(k))
+		if err != nil || len(raw) != 32 {
+			return fmt.Errorf("update_public_keys must contain base64 Ed25519 public keys, got %q", k)
+		}
+	}
+
 	return nil
 }
 
@@ -314,14 +389,27 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("error reading configuration file %s: %w", path, err)
 	}
 
+	return parse(data, path)
+}
+
+// parse decodes and validates a configuration file's contents.
+func parse(data []byte, path string) (*Config, error) {
+	cfg := DefaultConfig()
 	// Strip UTF-8 BOM if present (common on Windows / PowerShell)
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	data = sanitizeYAML(data)
 
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil {
+	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("error parsing configuration file %s: %w", path, err)
+	}
+	var present map[string]any
+	_ = yaml.Unmarshal(data, &present)
+	for key, apply := range legacySettingDefaults {
+		if _, ok := present[key]; !ok {
+			apply(cfg)
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -440,18 +528,8 @@ func setBoolSetting(path, key string, enabled bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Write fresh default config with requested setting
-			dir := filepath.Dir(path)
-			if err := os.MkdirAll(dir, 0755); err != nil && !os.IsPermission(err) {
-				return err
-			}
-			fresh := DefaultConfig()
-			applyBoolSetting(fresh, key, enabled)
-			freshConfig, err := yaml.Marshal(fresh)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(path, []byte(freshConfig), 0644)
+			_, _, err := Apply(path, map[string]any{key: enabled})
+			return err
 		}
 		return fmt.Errorf("error reading configuration file %s: %w", path, err)
 	}

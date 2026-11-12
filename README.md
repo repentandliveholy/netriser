@@ -35,32 +35,59 @@ Downloads, checksums, and release metadata are available from the
 history are published at [GitHub](https://github.com/repentandliveholy/netriser).
 
 The installer prints download, checksum, backup, configuration and service
-steps. It asks whether to start in read-only observation mode (default: no),
-enable automatic updates (default: yes) and allow emergency host reboot
-(default: no). Unix prompts read from the terminal, including with
-`curl | sh`. On a rerun, Enter preserves the existing choices and custom settings.
-A fresh installation always creates a complete configuration file.
+steps. Before it stops or changes anything, the verified binary asks every setup
+question (see [Setup](#setup)). Unix prompts read from the terminal, including
+with `curl | sh`. On a rerun, each question offers the current setting and Enter
+keeps it. Declining to save cancels the installation without changes.
 
-For unattended Unix installation, set choices on the `sh` process:
+For unattended installation, choose settings with environment variables on the
+`sh` process (PowerShell reads the same variables):
 
 ```sh
 curl -fsSL https://netriser.repentandliveholy.org/install.sh | \
   NETRISER_NONINTERACTIVE=1 NETRISER_OBSERVATION_MODE=false \
-  NETRISER_AUTO_UPDATE=true NETRISER_ENABLE_REBOOT=false sh
+  NETRISER_AUTO_UPDATE=true NETRISER_ENABLE_REBOOT=false \
+  NETRISER_ALLOW_VPN_BYPASS=false sh
 ```
 
-PowerShell uses the same `NETRISER_NONINTERACTIVE`, `NETRISER_OBSERVATION_MODE`,
-`NETRISER_AUTO_UPDATE` and `NETRISER_ENABLE_REBOOT` environment variables.
-Without a terminal, fresh installs use observation off, updates on and reboot
-off; existing settings are preserved unless overridden.
+Without a terminal, a new installation uses the safe defaults (observation mode
+on, VPN bypass off, reboot off, updates on); an existing installation keeps its
+settings except those selected by the variables.
+
+## Setup
+
+`netriser setup` (alias `nr setup`) asks the installation questions and applies
+the answers. Run it at any time to change them; it restarts a running service
+when something changed. The questions cover:
+
+1. **Observation mode**: read-only operation that records incidents and planned
+   actions without changing anything. New installations start here.
+2. **Connectivity probes**: the internet probes are tested live; if this network
+   blocks them, enter targets it can reach. Optional mesh/VPN endpoints are
+   monitored separately.
+3. **VPNs and overlays**: the interfaces present on the host are listed. Hosts
+   that deliberately route all traffic through a VPN or exit node name that
+   interface (`allowed_default_interfaces`). A separate question decides
+   whether NetRiser may bypass a full-tunnel VPN that cut the host off
+   (`allow_vpn_bypass`, default no). Unrecognised VPNs can be described.
+4. **Recovery actions**: route cleanup, overlay quarantine, network restart,
+   DNS recovery (Linux), and the uplink interface (or auto-detection).
+5. **Emergency reboot** and the minimum outage before it.
+6. **Automatic updates**.
+
+The answers end with a summary of changes and a confirmation. Comments and
+unrelated settings in the configuration file are preserved.
+`netriser setup --non-interactive --observation-mode=false` applies explicit
+settings without questions; `netriser init-config` creates a missing
+configuration without asking.
 
 ### Trying NetRiser on a production host
 
-Choose observation mode during installation. NetRiser then records incidents
-and the actions it would have taken, but changes no routes, services, DNS
-configuration or binaries. Review `/var/log/netriser.log` and the incident
-directory for a while, then enable recovery with `nr observe off`. Switch back
-at any time with `nr observe on`.
+Keep observation mode on. NetRiser then records incidents and the actions it
+would have taken, but changes no routes, services, DNS configuration or
+binaries. Review `/var/log/netriser.log` and the incident directory for a
+while, then enable recovery with `nr observe off`. Switch back at any time with
+`nr observe on`.
 
 ## Migration from Mesh Watchdog
 
@@ -96,31 +123,63 @@ Important settings:
 | `dns_canaries` | Hostnames used to check system DNS resolution. |
 | `allow_dns_recovery` | Permit restoration of a known healthy Linux resolver configuration. |
 | `management_interface`, `management_gateway` | Optional physical uplink overrides. |
-| `observation_mode` | Read-only mode: log incidents without recovery actions or updates. Toggle with `nr observe on\|off`. |
+| `observation_mode` | Read-only mode: log incidents without recovery actions or updates. On for new installations. Toggle with `nr observe on\|off`. |
 | `allow_route_sanitation` | Permit targeted cleanup of suspicious routes. |
-| `allow_service_quarantine` | Permit stopping a mesh service when a matching rogue route is detected. |
+| `allow_service_quarantine` | Permit stopping an overlay service that publishes a rogue route. |
+| `monitored_services` | Services eligible for quarantine; `"*"` means any service of a detected overlay. |
 | `allowed_default_interfaces` | Overlay interfaces allowed to carry the default route, such as `tailscale0` on a host that uses a Tailscale exit node. |
+| `allow_vpn_bypass` | Permit removing the routes of, or stopping, a full-tunnel VPN that cut the host off. Off for new installations. |
+| `overlays` | Definitions for VPNs and overlays that are not recognised automatically. |
 | `allow_network_restart` | Permit supported network-stack recovery. |
 | `enable_reboot` | Permit emergency host reboot. Defaults to `false`. |
 | `auto_update`, `update_url` | Control update checks and the distribution endpoint. |
+| `update_public_keys` | Extra trusted release-signing keys for a self-hosted mirror. |
 | `check_interval_sec`, `recovery_interval_sec` | Wait after a completed check: 60 seconds while healthy, 15 seconds during an IP outage. |
 | `reboot_min_outage_sec` | Require a measured continuous outage before an enabled reboot; defaults to 300 seconds. |
 
-Set only recovery actions appropriate for the host.
+Set only recovery actions appropriate for the host. Configurations created
+before 1.3.0 that do not mention `observation_mode`, `allow_vpn_bypass` or
+`monitored_services` keep their previous behaviour (recovery on, VPN bypass on,
+the five original overlay services); `netriser setup` can change them.
 
-If the host routes its own traffic through a VPN or mesh exit node, such as a
-Tailscale exit node, add that interface to `allowed_default_interfaces`.
-Otherwise NetRiser treats the overlay default route as a rogue route and, with
-`allow_service_quarantine` enabled, may stop the overlay service. Hosts that
-only advertise an exit node for other devices keep their default route on the
-physical uplink and need no change.
+## VPNs and overlays
 
-On Windows, a VPN or mesh client that captures the default route is contained
-in stages: its routes are removed first, then its service is stopped
-(`WireGuardTunnel$<tunnel>` for WireGuard, `Tailscale`, `ZeroTierOneService`,
-`netbird`, `nebula`) and restarted once connectivity has recovered. Stopping a
-WireGuard tunnel also lifts its kill-switch. Only overlays that published a
-rogue default route are touched.
+NetRiser recognises these protocols by interface name (on Windows also by
+adapter description):
+
+| Kind | Protocols |
+| --- | --- |
+| Mesh overlay | NetBird, Tailscale/Headscale, ZeroTier, Nebula, Yggdrasil |
+| Full-tunnel VPN | WireGuard, OpenVPN (including DCO), IPsec (strongSwan, Libreswan, Windows IKEv2/L2TP/SSTP), Mullvad, NordVPN, Cloudflare WARP, ProtonVPN, Cisco AnyConnect, GlobalProtect, FortiClient, generic `tun`/`tap`/`utun` tunnels |
+
+A **mesh overlay** should never carry the host's default route. If it does (for
+example an exit node selected by mistake), NetRiser removes the route and, if
+needed, stops the overlay's service, then restarts it after recovery. List the
+interface in `allowed_default_interfaces` when the host uses an exit node on
+purpose.
+
+A **full-tunnel VPN** carries the default route on purpose, often with a
+kill-switch. NetRiser leaves it alone unless `allow_vpn_bypass` is true. With
+bypass enabled, a VPN that cut the host off has its routes removed or its
+service stopped (WireGuard for Windows: `WireGuardTunnel$<tunnel>`, Linux:
+`wg-quick@<iface>`, plus the known services of the products above); traffic then
+leaves outside the VPN until the VPN is restarted after recovery. Enable it only
+on hosts where regaining access matters more than keeping traffic inside the VPN.
+
+`ppp*` interfaces are not treated as VPNs because they are often the physical
+PPPoE uplink. Describe anything else under `overlays`:
+
+```yaml
+overlays:
+  - name: corp-vpn
+    interface: "^corp[0-9]+$"    # regular expression; Windows: alias or description
+    kind: vpn                    # vpn (full tunnel) or mesh
+    services: ["corp-vpn.service"] # "{iface}" expands to the interface name
+```
+
+On Windows, an overlay without a known service is contained by disabling its
+adapter and re-enabling it after recovery. On macOS, Tailscale, NetBird and most
+VPN clients share `utun` interfaces, so they are handled as generic tunnels.
 
 If the physical uplink adapter is disabled by hand, NetRiser on Windows keeps
 the last confirmed adapter as the uplink; at stage 3 it enables the adapter,
@@ -129,7 +188,7 @@ connection keeps the host online, nothing is changed. Emergency reboot is
 disabled by default and should remain disabled unless unattended reboot is an
 explicit operational requirement.
 
-With fresh defaults, recovery stages 1, 2 and 3 occur on consecutive failed
+With default thresholds, recovery stages 1, 2 and 3 occur on consecutive failed
 checks, separated by 15 seconds plus probe/action time. Initial outage detection
 can take up to the normal monitoring interval plus probe time. Existing explicit
 stage thresholds are retained. Reboot additionally requires the configured
@@ -149,6 +208,7 @@ not trigger overlay quarantine, WAN restarts or emergency reboot.
 ```sh
 netriser status
 nr status                    # same application, short command
+netriser setup               # answer the installation questions again
 netriser check-config
 netriser init-config         # create defaults if missing; keep an existing config
 netriser run                 # foreground mode
@@ -184,8 +244,9 @@ Requires a Go toolchain compatible with the version in `go.mod`.
 
 Both scripts build pure-Go binaries (`CGO_ENABLED=0`) for Linux amd64/arm64,
 Windows amd64, and macOS amd64/arm64. The release script creates canonical
-NetRiser asset names, SHA-256 checksums, an update manifest, installer scripts,
-public docs, and a static distribution page in `dist/`. The historical
+NetRiser asset names, SHA-256 checksums, a signed update manifest, installer
+scripts, public docs, and a static distribution page in `dist/`. Signing needs
+the offline release key; see [RELEASING.md](RELEASING.md). The historical
 Mesh Watchdog download host remains separate during the migration so older
 clients continue receiving matching legacy binaries and checksums.
 
@@ -197,9 +258,16 @@ clients continue receiving matching legacy binaries and checksums.
   validate behavior before enabling actions on production or remote systems.
 - IPv4 route recovery is the primary remediation scope. IPv6 information may
   appear in diagnostics, but IPv6 routes are not actively repaired.
-- Automatic updates download release metadata and binaries from the configured
-  update host and verify binary SHA-256 against the manifest. Keep the URL
-  pointed at a trusted HTTPS endpoint.
+- Updates are accepted only when the release manifest (`version.json`) carries a
+  valid Ed25519 signature (`version.json.sig`) from a key built into NetRiser or
+  listed in `update_public_keys`. The manifest holds each binary's SHA-256, so a
+  compromised or spoofed distribution host cannot push a binary. Older releases
+  are never installed, even with `--force`. Automatic updates run only outside
+  observation mode, while connectivity is healthy.
+- The initial `curl | sh` installation trusts HTTPS and the distribution host.
+  To verify a download independently, check `sha256sums.txt` against
+  `sha256sums.txt.sig` with the public key published in the repository
+  (`internal/updater/releasekey.go`): `go run ./cmd/netriser-sign verify sha256sums.txt`.
 - NetRiser relies on operating-system tools such as `ip` and `systemctl` on
   Linux, PowerShell networking cmdlets on Windows, and `route`/`launchctl` on
   macOS. Linux service management requires systemd.

@@ -192,6 +192,7 @@ func (f *fakeClock) Sleep(ctx context.Context, d time.Duration) error {
 func setupTestWatchdog(t *testing.T) (*Watchdog, *config.Config, *mockEngine, *fakeChecker) {
 	tmpDir := t.TempDir()
 	cfg := config.DefaultConfig()
+	cfg.ObservationMode = false // tests exercise active recovery
 	cfg.StateDir = filepath.Join(tmpDir, "state")
 	cfg.IncidentDir = filepath.Join(tmpDir, "incidents")
 	cfg.LockFile = filepath.Join(tmpDir, "state", "test.lock")
@@ -552,6 +553,7 @@ func TestDecideEscalationTable(t *testing.T) {
 	invalidBaseline := netengine.Baseline{}
 
 	cfg := config.DefaultConfig()
+	cfg.ObservationMode = false
 	cfg.FailThresholdStage1 = 2
 	cfg.FailThresholdStage2 = 4
 	cfg.FailThresholdStage3 = 6

@@ -58,7 +58,7 @@ func (e *WindowsEngine) rogueRoutes(ctx context.Context) ([]WindowsRoute, error)
 	if err != nil {
 		return nil, err
 	}
-	return WindowsRogueRoutes(ParseWindowsRoutes(out), e.cfg.IsAllowedDefaultInterface), nil
+	return WindowsRogueRoutes(ParseWindowsRoutes(out), e.cfg), nil
 }
 
 func (e *WindowsEngine) rememberRogue(routes []WindowsRoute) {
@@ -112,6 +112,7 @@ func NewEngineWithRunner(cfg *config.Config, runner CommandRunner) NetworkEngine
 	if runner == nil {
 		runner = &DefaultCommandRunner{}
 	}
+	ConfigureOverlays(cfg)
 	return &WindowsEngine{cfg: cfg, runner: runner}
 }
 
@@ -182,7 +183,7 @@ Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction Sil
 					status = strings.TrimSpace(parts[3])
 				}
 
-				if windowsOverlayRegex.MatchString(alias) || windowsOverlayRegex.MatchString(desc) {
+				if isWindowsVirtualAdapter(alias, desc) {
 					continue
 				}
 
@@ -290,6 +291,7 @@ func (e *WindowsEngine) SurgicalCleanRoutes(ctx context.Context, b Baseline) ([]
 		// A WireGuard full tunnel owns the route and, with its kill-switch,
 		// blocks untunneled traffic that route cleanup cannot restore (while
 		// still permitting DNS to the tunnel's resolvers). Stop the tunnel.
+		// Rogue VPN routes exist here only with allow_vpn_bypass.
 		if r.IsWindowsWireGuard() && e.cfg.AllowServiceQuarantine {
 			if act, ok := e.stopOverlayService(ctx, r); ok {
 				actions = append(actions, act)

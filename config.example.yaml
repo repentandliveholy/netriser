@@ -1,8 +1,18 @@
 # ======================================================================
-# NetRiser configuration example
+# NetRiser configuration
 # ======================================================================
+# Answer the setup questions again at any time:   netriser setup
+# Paths (log_file, state_dir, incident_dir, lock_file) default to the
+# platform locations and may be added here to override them.
 
-# Public DNS/IP targets polled in parallel for connectivity checks.
+# Observation mode is read-only: it logs incidents and planned actions without
+# changing routes, services, DNS or the installed binary. New installations
+# start in observation mode. Toggle: nr observe on|off
+observation_mode: true
+
+# ---------------------------------------------------------------- probes ----
+# Public DNS/IP targets polled in parallel for connectivity checks (host:port).
+# Replace them if this network blocks these resolvers.
 canary_targets:
   - "1.1.1.1:53"
   - "8.8.8.8:53"
@@ -17,7 +27,7 @@ http_fallback_url: "http://1.1.1.1"
 # tunnel's resolvers.
 min_healthy_targets: 2
 
-# Optional internal mesh canaries, such as a lighthouse or management endpoint.
+# Optional endpoints reachable only through a mesh or VPN (host:port).
 mesh_canaries: []
 
 # Check hostname resolution in addition to IP connectivity. An empty list
@@ -32,6 +42,7 @@ check_interval_sec: 60
 recovery_interval_sec: 15 # Wait between completed checks during an IP outage.
 probe_timeout_sec: 3
 
+# ---------------------------------------------------------------- uplink ----
 # Optional physical interface and gateway overrides (empty means auto-detect).
 management_interface: ""
 management_gateway: ""
@@ -40,34 +51,50 @@ management_gateway: ""
 policy_routing_table: 200
 policy_routing_priority: 100
 
-# Overlay services monitored and eligible for quarantine at escalation stage 2.
-monitored_services:
-  - "netbird"
-  - "netbird-client"
-  - "zerotier-one"
-  - "nebula"
-  - "tailscaled"
+# ------------------------------------------------------- VPNs and overlays ----
+# Built-in detection covers WireGuard, OpenVPN, IPsec (strongSwan/Libreswan),
+# Tailscale/Headscale, ZeroTier, NetBird, Nebula, Yggdrasil, Mullvad, NordVPN,
+# Cloudflare WARP, Cisco AnyConnect, GlobalProtect, FortiClient and generic
+# tun/tap/utun tunnels. `netriser setup` lists the ones present on this host.
+#
+# Overlay interfaces permitted to carry the host's default route. A default
+# route through any other mesh overlay is treated as a rogue route. List the
+# interface here when this host intentionally sends its own traffic through a
+# VPN or exit node, for example:
+#   allowed_default_interfaces: ["tailscale0"]
+allowed_default_interfaces: []
 
+# Full-tunnel VPNs (WireGuard, OpenVPN, IPsec, commercial VPN clients) are left
+# alone unless this is true. When true, NetRiser may remove a VPN's routes or
+# stop it if it cuts the host off: traffic then leaves outside the VPN and its
+# kill-switch is lifted. Keep false on hosts that must never leak traffic.
+allow_vpn_bypass: false
+
+# Overlay services that may be quarantined (stopped) at escalation stage 2.
+# "*" allows the service of any detected overlay that published a rogue route.
+monitored_services:
+  - "*"
+
+# VPNs or overlays NetRiser does not recognise. Each entry is matched before the
+# built-in list. kind: vpn (full tunnel) or mesh. "{iface}" in a service name
+# expands to the interface name. Example:
+#   overlays:
+#     - name: corp-vpn
+#       interface: "^corp[0-9]+$"
+#       kind: vpn
+#       services: ["corp-vpn.service"]
+overlays: []
+
+# -------------------------------------------------------------- recovery ----
 # Escalation thresholds are consecutive failed checks.
 fail_threshold_stage1: 1         # Targeted route cleanup.
-fail_threshold_stage2: 2         # Quarantine a matching mesh service.
+fail_threshold_stage2: 2         # Quarantine a matching overlay service.
 fail_threshold_stage3: 3         # Restart supported network components.
 fail_threshold_stage4_reboot: 5  # Emergency host reboot, if enabled.
 
-# Observation mode is read-only: it logs incidents and planned actions without
-# changing routes, services, DNS or the installed binary. Toggle: nr observe on|off
-observation_mode: false
 allow_route_sanitation: true
 allow_service_quarantine: true
 allow_network_restart: true
-
-# Overlay interfaces permitted to carry the host's default route. A default route
-# through any other overlay is treated as a rogue route, and its service (for
-# example tailscaled) can be stopped by quarantine. If this host sends its own
-# traffic through a Tailscale exit node, list the interface here:
-#   allowed_default_interfaces: ["tailscale0"]
-# Not needed when the host only advertises itself as an exit node for others.
-allowed_default_interfaces: []
 
 # Emergency reboot is disabled unless explicitly enabled.
 enable_reboot: false
@@ -78,7 +105,11 @@ reboot_budget_window_sec: 3600
 startup_grace_sec: 60
 enable_sysrq_fallback: false     # Linux only: use /proc/sysrq-trigger as a last resort.
 
-# Automatic updates are checked after startup while connectivity is healthy.
+# --------------------------------------------------------------- updates ----
+# Updates are installed only when the release manifest carries a valid
+# Ed25519 signature from a trusted key, and never to an older version.
 auto_update: true
 auto_update_interval_sec: 21600
 update_url: "https://netriser.repentandliveholy.org"
+# Extra trusted signing keys (base64) for a self-hosted mirror.
+update_public_keys: []

@@ -3,7 +3,10 @@ package updater
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -44,25 +47,10 @@ func TestUpdaterCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fakeClient := &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path == "/version.json" {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(bytes.NewReader(manifestBytes)),
-					Header:     make(http.Header),
-				}, nil
-			}
-			return &http.Response{
-				StatusCode: http.StatusNotFound,
-				Body:       io.NopCloser(bytes.NewReader([]byte("not found"))),
-				Header:     make(http.Header),
-			}, nil
-		}),
-	}
-
+	pub, priv := testKey(t)
 	u := New("https://mesh-watchdog.test/")
-	u.SetHTTPClient(fakeClient)
+	u.SetHTTPClient(manifestServer(manifestBytes, []byte(Sign(manifestBytes, priv))))
+	u.setKeysForTest(pub)
 	u.SetTargetPlatform("darwin", "arm64")
 
 	// 1. Check with older version -> update available
@@ -206,5 +194,111 @@ func TestVersionComparisonDoesNotDowngradeNumberedReleases(t *testing.T) {
 		if got := isNewerVersion(tc.current, "abc", tc.latest, "def"); got != tc.want {
 			t.Errorf("%s -> %s = %t", tc.current, tc.latest, got)
 		}
+	}
+}
+
+func testKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub, priv
+}
+
+// manifestServer serves version.json and, when sig is not nil, its signature.
+func manifestServer(manifest, sig []byte) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, status := []byte("not found"), http.StatusNotFound
+		switch req.URL.Path {
+		case "/version.json":
+			body, status = manifest, http.StatusOK
+		case "/version.json.sig":
+			if sig != nil {
+				body, status = sig, http.StatusOK
+			}
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+}
+
+func signedTestManifest(t *testing.T, version string) []byte {
+	t.Helper()
+	data, err := json.Marshal(Manifest{Version: version, Commit: "c0ffee", Files: map[string]FileEntry{
+		"linux/amd64": {Filename: "netriser-linux-amd64", SHA256: strings.Repeat("a", 64)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestUpdaterRejectsUnsignedForgedAndTamperedManifests(t *testing.T) {
+	pub, priv := testKey(t)
+	_, attacker := testKey(t)
+	manifest := signedTestManifest(t, "9.0.0")
+	tampered := bytes.Replace(manifest, []byte("9.0.0"), []byte("9.0.1"), 1)
+	for name, client := range map[string]*http.Client{
+		"missing signature":  manifestServer(manifest, nil),
+		"garbage signature":  manifestServer(manifest, []byte("not base64!")),
+		"attacker signature": manifestServer(manifest, []byte(Sign(manifest, attacker))),
+		"tampered manifest":  manifestServer(tampered, []byte(Sign(manifest, priv))),
+	} {
+		u := New("https://dist.test")
+		u.SetHTTPClient(client)
+		u.setKeysForTest(pub)
+		u.SetTargetPlatform("linux", "amd64")
+		if _, err := u.Check(context.Background(), "1.0.0", "x"); err == nil || !strings.Contains(err.Error(), "not signed") {
+			t.Errorf("%s: accepted or wrong error: %v", name, err)
+		}
+	}
+}
+
+func TestUpdaterAcceptsConfiguredMirrorKey(t *testing.T) {
+	pub, priv := testKey(t)
+	manifest := signedTestManifest(t, "9.0.0")
+	u := New("https://mirror.test")
+	u.SetHTTPClient(manifestServer(manifest, []byte(Sign(manifest, priv))))
+	u.SetTargetPlatform("linux", "amd64")
+	if _, err := u.Check(context.Background(), "1.0.0", "x"); err == nil {
+		t.Fatal("mirror key trusted before configuration")
+	}
+	if err := u.SetTrustedKeys([]string{base64.StdEncoding.EncodeToString(pub)}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := u.Check(context.Background(), "1.0.0", "x")
+	if err != nil || !info.UpdateAvailable {
+		t.Fatalf("configured mirror key rejected: %v", err)
+	}
+	if err := u.SetTrustedKeys([]string{"short"}); err == nil {
+		t.Fatal("invalid key accepted")
+	}
+}
+
+func TestUpdaterNeverDowngrades(t *testing.T) {
+	pub, priv := testKey(t)
+	manifest := signedTestManifest(t, "1.2.0")
+	u := New("https://dist.test")
+	u.SetHTTPClient(manifestServer(manifest, []byte(Sign(manifest, priv))))
+	u.setKeysForTest(pub)
+	u.SetTargetPlatform("linux", "amd64")
+	info, err := u.Check(context.Background(), "1.3.0", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.UpdateAvailable || !info.Downgrade {
+		t.Fatalf("old release not flagged as downgrade: %+v", info)
+	}
+	path := filepath.Join(t.TempDir(), "binary")
+	os.WriteFile(path, []byte("current"), 0755)
+	if err := u.Apply(context.Background(), path, info); err == nil || !strings.Contains(err.Error(), "downgrade") {
+		t.Fatalf("downgrade applied: %v", err)
+	}
+}
+
+func TestBuiltinReleaseKeyIsValid(t *testing.T) {
+	keys, err := TrustedKeys(nil)
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("built-in release key invalid: %v", err)
 	}
 }

@@ -45,27 +45,12 @@ function Copy-BackupPath([string]$Path) {
         Copy-Item -LiteralPath $Path -Destination $destination -Recurse -Force
     }
 }
-function Choose-Setting([string]$Label, [string]$Supplied, [string]$Fallback) {
-    if ($Supplied) {
-        switch ($Supplied.ToLowerInvariant()) {
-            { $_ -in @('true', 'yes', 'y', '1', 'on') } { return 'true' }
-            { $_ -in @('false', 'no', 'n', '0', 'off') } { return 'false' }
-            default { throw "Invalid setting for ${Label}: use true or false." }
-        }
-    }
-    if ($env:NETRISER_NONINTERACTIVE -eq '1' -or -not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
-        Write-Host "${Label}: no interactive prompt; using $Fallback (keep = preserve existing setting)."
-        return $Fallback
-    }
-    $hint = switch ($Fallback) { 'true' { 'Y/n' }; 'false' { 'y/N' }; 'keep' { 'y/n, Enter = keep current setting' } }
-    while ($true) {
-        $reply = Read-Host "$Label [$hint]"
-        switch ($reply.ToLowerInvariant()) {
-            '' { return $Fallback }
-            { $_ -in @('y', 'yes') } { return 'true' }
-            { $_ -in @('n', 'no') } { return 'false' }
-            default { Write-Host 'Please answer y or n (or Enter for the default).' }
-        }
+function Normalize-Choice([string]$Label, [string]$Supplied) {
+    if (-not $Supplied) { return '' }
+    switch ($Supplied.ToLowerInvariant()) {
+        { $_ -in @('true', 'yes', 'y', '1', 'on') } { return 'true' }
+        { $_ -in @('false', 'no', 'n', '0', 'off') } { return 'false' }
+        default { throw "Invalid setting for ${Label}: use true or false." }
     }
 }
 function Restore-BackupPath([string]$Path) {
@@ -123,20 +108,26 @@ try {
     & $TempPath version
     if ($LASTEXITCODE -ne 0) { throw 'Downloaded binary could not run.' }
     $EffectiveConfig = if ($LegacyConfig) { $LegacyConfig } else { Join-Path $NewData 'config.yaml' }
-    $ObserveDefault = 'false'
-    $AutoDefault = 'true'
-    $RebootDefault = 'false'
-    if ((Test-Path -LiteralPath $EffectiveConfig) -or (Test-Path -LiteralPath (Join-Path $LegacyData 'config.yaml')) -or (Test-Path -LiteralPath (Join-Path $LegacyData 'state'))) {
-        $ObserveDefault = 'keep'
-        $AutoDefault = 'keep'
-        $RebootDefault = 'keep'
+    # Questions are asked by the verified binary before anything is stopped or
+    # changed; the answers are applied in step 7.
+    $AnswersPath = Join-Path $TempDir 'answers.yaml'
+    $setupArgs = @('--config', $EffectiveConfig, 'setup', "--save-answers=$AnswersPath")
+    foreach ($choice in @(
+            @('NETRISER_OBSERVATION_MODE', '--observation-mode'),
+            @('NETRISER_AUTO_UPDATE', '--auto-update'),
+            @('NETRISER_ENABLE_REBOOT', '--enable-reboot'),
+            @('NETRISER_ALLOW_VPN_BYPASS', '--allow-vpn-bypass'))) {
+        $value = Normalize-Choice $choice[0] ([Environment]::GetEnvironmentVariable($choice[0]))
+        if ($value) { $setupArgs += "$($choice[1])=$value" }
     }
-    Write-Host 'Observation mode is read-only: NetRiser records incidents but does not change routes, services, DNS or updates.'
-    Write-Host 'Turn on recovery later with: nr observe off'
-    $ObserveChoice = Choose-Setting 'Start in observation (read-only) mode' $env:NETRISER_OBSERVATION_MODE $ObserveDefault
-    $AutoChoice = Choose-Setting 'Enable automatic updates' $env:NETRISER_AUTO_UPDATE $AutoDefault
-    $RebootChoice = Choose-Setting 'Allow emergency host reboot (off by default; fresh installs wait at least 5 minutes)' $env:NETRISER_ENABLE_REBOOT $RebootDefault
-    Write-Host "Installation choices: observation mode=$ObserveChoice; automatic updates=$AutoChoice; emergency reboot=$RebootChoice"
+    if ($env:NETRISER_NONINTERACTIVE -eq '1' -or -not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Write-Host 'No interactive console: new installations start in observation mode; existing settings are kept unless NETRISER_* variables select them.'
+        $setupArgs += '--non-interactive'
+    } else {
+        Write-Host 'Installation questions (answer them again at any time with: nr setup)'
+    }
+    & $TempPath @setupArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Setup was cancelled or failed; nothing was changed.' }
 
     $Backup = Join-Path $ProgramData "NetRiser-Backups\migration-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))-$([guid]::NewGuid().ToString('N'))"
     Write-Host "[5/8] Saving rollback backup: $Backup"
@@ -173,12 +164,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Configuration migration failed (exit $LASTEXITCODE)." }
 
     Write-Host "[7/8] Creating or preserving configuration: $EffectiveConfig"
-    $initArgs = @('--config', $EffectiveConfig, 'init-config')
-    if ($ObserveChoice -ne 'keep') { $initArgs += "--observation-mode=$ObserveChoice" }
-    if ($AutoChoice -ne 'keep') { $initArgs += "--auto-update=$AutoChoice" }
-    if ($RebootChoice -ne 'keep') { $initArgs += "--enable-reboot=$RebootChoice" }
-    & $BinPath @initArgs
-    if ($LASTEXITCODE -ne 0) { throw "Configuration initialization failed (exit $LASTEXITCODE)." }
+    & $BinPath --config $EffectiveConfig setup "--answers=$AnswersPath" --no-restart
+    if ($LASTEXITCODE -ne 0) { throw "Configuration update failed (exit $LASTEXITCODE)." }
 
     Write-Host '[8/8] Starting NetRiser and verifying service state'
     if ($NewService) {
@@ -218,7 +205,10 @@ try {
     }
     Write-Host "NetRiser installed. Migration backup: $Backup" -ForegroundColor Green
     Write-Host "License: MIT; license texts installed in $LicenseDir"
-    Write-Host 'Commands: nr status; nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status'
+    Write-Host 'Commands: nr status; nr setup (answer the installation questions again); nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status'
+    if ((& $BinPath --config $EffectiveConfig observe status) -match 'Observation mode: ON') {
+        Write-Host 'NetRiser is in observation mode: it records incidents but changes nothing. Enable recovery with: nr observe off'
+    }
     Write-Host "Logs: $(Join-Path $NewData 'logs\netriser.log') (legacy/custom paths are preserved)"
 } catch {
     Rollback-Install

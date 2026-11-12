@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.3.0
+
+Security
+- Updates require an Ed25519 signature over the release manifest
+  (`version.json.sig`). The manifest carries every binary's SHA-256, so a
+  compromised distribution host can no longer push a binary to installed hosts.
+  Extra keys for self-hosted mirrors: `update_public_keys`. Releases are signed
+  with an offline key (RELEASING.md); `sha256sums.txt` is signed as well.
+- Older releases are never installed, including with `update --force`.
+- Full-tunnel VPNs (WireGuard, OpenVPN, IPsec, commercial VPN clients) are left
+  alone unless `allow_vpn_bypass` is enabled. Bypassing a VPN sends traffic
+  outside it and lifts its kill-switch, which must be an explicit choice.
+- New installations start in observation mode.
+- macOS: /1 routes were deleted on every interface during cleanup and
+  quarantine, including routes of allowed VPNs; only routes of overlays that
+  recovery may touch are removed now, and quarantine requires route evidence.
+
+Setup
+- `netriser setup` asks every installation question (observation mode, live
+  probe test, VPNs and overlays on the host, VPN bypass, custom overlays,
+  recovery stages, DNS recovery, uplink interface, emergency reboot, updates),
+  shows a summary of changes and asks for confirmation. Rerun it at any time;
+  Enter keeps the current setting and a running service is restarted.
+- The installers ask the questions with the verified binary before stopping or
+  changing anything and apply the answers after installation. Declining to save
+  cancels the installation. New variable: `NETRISER_ALLOW_VPN_BYPASS`.
+- New configurations are created from a commented template.
+
+Protocols
+- VPN/overlay detection is a single registry used on Linux, macOS and Windows:
+  NetBird, Tailscale/Headscale, ZeroTier, Nebula, Yggdrasil, WireGuard, OpenVPN,
+  IPsec, Mullvad, NordVPN, Cloudflare WARP, ProtonVPN, Cisco AnyConnect,
+  GlobalProtect, FortiClient and generic tunnels. `ppp*` is not an overlay
+  (PPPoE uplinks).
+- Custom definitions: `overlays` (interface pattern, kind, services).
+- Linux quarantine stops the services of the overlay that published the rogue
+  route, for example `wg-quick@wg0`; `monitored_services: ["*"]` allows any.
+
+Compatibility
+- Existing configurations that do not mention `observation_mode`,
+  `allow_vpn_bypass` or `monitored_services` keep their previous behaviour.
+- 1.2.x installations update to 1.3.0 normally; 1.3.0 then accepts only signed
+  releases.
+
 ## 1.2.6
 
 - Connectivity now requires at least two distinct answering internet probes

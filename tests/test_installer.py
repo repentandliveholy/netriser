@@ -103,11 +103,13 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         config = self.config.read_text()
-        for line in ("observation_mode: false", "auto_update: true", "enable_reboot: false", "recovery_interval_sec: 15", "reboot_min_outage_sec: 300"):
+        # New installations start read-only and never bypass a VPN by default.
+        for line in ("observation_mode: true", "allow_vpn_bypass: false", "auto_update: true", "enable_reboot: false", "recovery_interval_sec: 15", "reboot_min_outage_sec: 300", "netriser setup"):
             self.assertIn(line, config)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertIn("[8/8]", result.stdout)
-        self.assertIn("Observation mode (no recovery actions): false", result.stdout)
+        self.assertIn("Observation mode (no recovery actions): true", result.stdout)
+        self.assertIn("Enable recovery with: nr observe off", result.stdout)
         self.assertIn("Automatic updates: true", result.stdout)
         self.assertIn("Emergency reboot: false", result.stdout)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES"):
@@ -120,11 +122,11 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.config.read_text(), initial)
-        self.env.update(NETRISER_AUTO_UPDATE="true", NETRISER_ENABLE_REBOOT="false", NETRISER_OBSERVATION_MODE="true")
+        self.env.update(NETRISER_AUTO_UPDATE="true", NETRISER_ENABLE_REBOOT="false", NETRISER_OBSERVATION_MODE="true", NETRISER_ALLOW_VPN_BYPASS="false")
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         config = self.config.read_text()
-        for line in ("# existing", "observation_mode: true", "auto_update: true", "enable_reboot: false", "check_interval_sec: 123", "state_dir: /custom/state"):
+        for line in ("# existing", "observation_mode: true", "auto_update: true", "enable_reboot: false", "allow_vpn_bypass: false", "check_interval_sec: 123", "state_dir: /custom/state"):
             self.assertIn(line, config)
 
     def test_bad_checksum_does_not_install(self):
@@ -170,43 +172,74 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         self.assertEqual((license_dir / "LICENSE").read_text(), "previous license\n")
         self.assertFalse((license_dir / "THIRD_PARTY_NOTICES").exists())
 
-    def test_questions_read_terminal_while_stdin_is_the_script(self):
-        self.env.pop("NETRISER_NONINTERACTIVE")
+    def run_terminal(self, answers):
+        """Run the piped installer on a pseudo-terminal and answer each prompt.
+        answers maps a prompt fragment to a reply; other prompts get Enter."""
+        self.env.pop("NETRISER_NONINTERACTIVE", None)
         pid, fd = pty.fork()
         if pid == 0:
             os.execve("/bin/sh", ["sh", "-c", 'cat "$1" | sh', "installer-test", str(self.installer)], self.env)
-        output = b""
-        answered = set()
-        deadline = time.monotonic() + 20
+        output = ""
+        answered_upto = 0
+        asked = []
+        deadline = time.monotonic() + 30
         try:
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([fd], [], [], 0.2)
-                if ready:
-                    try:
-                        chunk = os.read(fd, 65536)
-                    except OSError:
+                if not ready:
+                    continue
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk.decode(errors="replace")
+                while True:
+                    end = output.find("]: ", answered_upto)
+                    if end < 0:
                         break
-                    if not chunk:
-                        break
-                    output += chunk
-                    for label, answer in ((b"Start in observation (read-only) mode [y/N]:", b"y\n"),
-                                          (b"Enable automatic updates [Y/n]:", b"n\n"),
-                                          (b"wait at least 5 minutes) [y/N]:", b"y\n")):
-                        if label in output and label not in answered:
-                            os.write(fd, answer)
-                            answered.add(label)
+                    prompt = output[answered_upto:end].splitlines()[-1]
+                    reply = next((r for fragment, r in answers.items() if fragment in prompt), "")
+                    asked.append(prompt)
+                    os.write(fd, reply.encode() + b"\n")
+                    answered_upto = end + 3
             else:
                 os.kill(pid, 9)
-                self.fail("installer did not finish: " + output.decode(errors="replace"))
+                self.fail("installer did not finish: " + output)
         finally:
             os.close(fd)
             _, status = os.waitpid(pid, 0)
-        self.assertEqual(os.waitstatus_to_exitcode(status), 0, output.decode(errors="replace"))
-        self.assertEqual(len(answered), 3, output.decode(errors="replace"))
+        return os.waitstatus_to_exitcode(status), output, asked
+
+    def test_questions_read_terminal_while_stdin_is_the_script(self):
+        code, output, asked = self.run_terminal({
+            "Start in observation (read-only) mode": "n",
+            "Use these internet probes": "y",
+            "Enable automatic updates": "n",
+            "Allow emergency host reboot": "y",
+            "May NetRiser bypass a full-tunnel VPN": "y",
+        })
+        self.assertEqual(code, 0, output)
+        for question in ("observation", "internet probes", "Mesh/VPN endpoints", "traffic through a VPN",
+                         "bypass a full-tunnel VPN", "does not recognise", "Stage 1", "Stage 2", "Stage 3",
+                         "Uplink interface", "emergency host reboot", "Minimum continuous outage",
+                         "automatic updates", "Save these settings"):
+            self.assertTrue(any(question in a for a in asked), f"not asked: {question}\n{output}")
         config = self.config.read_text()
-        self.assertIn("auto_update: false", config)
-        self.assertIn("enable_reboot: true", config)
-        self.assertIn("observation_mode: true", config)
+        for line in ("observation_mode: false", "auto_update: false", "enable_reboot: true", "allow_vpn_bypass: true"):
+            self.assertIn(line, config)
+
+    def test_rerun_offers_current_settings_and_cancel_changes_nothing(self):
+        self.config.parent.mkdir(parents=True)
+        initial = "# mine\nobservation_mode: false\nauto_update: false\n"
+        self.config.write_text(initial)
+        code, output, asked = self.run_terminal({"Use these internet probes": "y", "Save these settings": "n"})
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("current settings", output)
+        self.assertIn("nothing was changed", output)
+        self.assertEqual(self.config.read_text(), initial)
+        self.assertFalse((self.root / "usr/local/sbin/netriser").exists())
 
 
 if __name__ == "__main__":

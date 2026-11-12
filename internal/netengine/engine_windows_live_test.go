@@ -29,5 +29,5 @@ func TestLiveWindowsDefaultRoutesScript(t *testing.T) {
 	for _, r := range routes {
 		t.Logf("%+v overlay=%t", r, r.isOverlay())
 	}
-	t.Logf("rogue: %+v", WindowsRogueRoutes(routes, nil))
+	t.Logf("rogue: %+v", WindowsRogueRoutes(routes, config.DefaultConfig()))
 }

@@ -78,7 +78,23 @@ func (h *fakeWindowsHost) Run(_ context.Context, name string, args ...string) (s
 func newFakeWindowsEngine(h *fakeWindowsHost, allowed ...string) *WindowsEngine {
 	cfg := config.DefaultConfig()
 	cfg.AllowedDefaultInterfaces = allowed
+	cfg.AllowVPNBypass = true // behaviour of installations that predate the setting
 	return &WindowsEngine{cfg: cfg, runner: h}
+}
+
+func TestWindowsWireGuardUntouchedWithoutVPNBypass(t *testing.T) {
+	const wgService = "WireGuardTunnel$wg-privacy"
+	h := &fakeWindowsHost{
+		routes:   []string{"Ethernet|0.0.0.0/0|25|Intel(R) Ethernet", "wg-privacy|0.0.0.0/0|5|WireGuard Tunnel"},
+		services: map[string]bool{wgService: true},
+	}
+	e := newFakeWindowsEngine(h)
+	e.cfg.AllowVPNBypass = false
+	_, _ = e.SurgicalCleanRoutes(context.Background(), Baseline{})
+	_, _ = e.QuarantineMeshServices(context.Background())
+	if !h.services[wgService] || len(h.routes) != 2 {
+		t.Fatalf("privacy VPN modified without allow_vpn_bypass: routes=%v services=%v", h.routes, h.services)
+	}
 }
 
 func TestWindowsWireGuardKillSwitchTunnelIsStoppedAtStageOne(t *testing.T) {

@@ -39,39 +39,14 @@ fetch() {
   else echo 'Install curl or wget and retry.' >&2; return 1; fi
 }
 
-# stdin contains the installer when invoked as curl | sh. Never read answers
-# from it: use the controlling terminal and leave the rest of the script intact.
-choose_setting() {
-  label="$1"; supplied="$2"; fallback="$3"
-  case "$supplied" in
-    true|yes|y|1|on) printf 'true\n'; return ;;
-    false|no|n|0|off) printf 'false\n'; return ;;
-    '') ;;
-    *) echo "Invalid setting for $label: use true or false." >&2; return 1 ;;
+# Unattended choices from the environment: true, false, or empty (not set).
+normalize_choice() {
+  case "$2" in
+    true|yes|y|1|on) printf 'true\n' ;;
+    false|no|n|0|off) printf 'false\n' ;;
+    '') printf '\n' ;;
+    *) echo "Invalid setting for $1: use true or false." >&2; return 1 ;;
   esac
-  if [ "${NETRISER_NONINTERACTIVE:-0}" = 1 ] || ! ( : <>/dev/tty ) 2>/dev/null; then
-    echo "$label: no interactive prompt; using $fallback (keep = preserve existing setting)." >&2
-    printf '%s\n' "$fallback"
-    return
-  fi
-  case "$fallback" in
-    true) hint='Y/n' ;;
-    false) hint='y/N' ;;
-    keep) hint='y/n, Enter = keep current setting' ;;
-  esac
-  while :; do
-    printf '%s [%s]: ' "$label" "$hint" >/dev/tty
-    if ! IFS= read -r reply </dev/tty; then
-      echo "Cannot read installation choice; set NETRISER_OBSERVATION_MODE, NETRISER_AUTO_UPDATE and NETRISER_ENABLE_REBOOT for unattended installation." >&2
-      return 1
-    fi
-    case "$reply" in
-      [Yy]|[Yy][Ee][Ss]) printf 'true\n'; return ;;
-      [Nn]|[Nn][Oo]) printf 'false\n'; return ;;
-      '') printf '%s\n' "$fallback"; return ;;
-      *) printf 'Please answer y or n (or Enter for the default).\n' >/dev/tty ;;
-    esac
-  done
 }
 
 discover_config() {
@@ -209,21 +184,30 @@ else
   run_root launchctl list com.netriser.daemon >/dev/null 2>&1 && NEW_WAS_ACTIVE=1 || true
 fi
 
-OBSERVE_DEFAULT=false
-AUTO_DEFAULT=true
-REBOOT_DEFAULT=false
 EFFECTIVE_CONFIG="${LEGACY_CONFIG_ARG:-$NEW_CONFIG}"
-if run_root test -f "$EFFECTIVE_CONFIG" || run_root test -f "$LEGACY_CONFIG" || run_root test -d "$LEGACY_STATE"; then
-  OBSERVE_DEFAULT=keep
-  AUTO_DEFAULT=keep
-  REBOOT_DEFAULT=keep
+OBSERVE_CHOICE="$(normalize_choice NETRISER_OBSERVATION_MODE "${NETRISER_OBSERVATION_MODE:-}")"
+AUTO_CHOICE="$(normalize_choice NETRISER_AUTO_UPDATE "${NETRISER_AUTO_UPDATE:-}")"
+REBOOT_CHOICE="$(normalize_choice NETRISER_ENABLE_REBOOT "${NETRISER_ENABLE_REBOOT:-}")"
+BYPASS_CHOICE="$(normalize_choice NETRISER_ALLOW_VPN_BYPASS "${NETRISER_ALLOW_VPN_BYPASS:-}")"
+ANSWERS="$WORK/answers.yaml"
+# Questions are asked by the verified binary before anything is stopped or
+# changed; the answers are applied in step 7. Unix prompts use the terminal,
+# because stdin is the installer script with curl | sh.
+set -- "$STAGED" --config "$EFFECTIVE_CONFIG" setup "--save-answers=$ANSWERS"
+[ -z "$OBSERVE_CHOICE" ] || set -- "$@" "--observation-mode=$OBSERVE_CHOICE"
+[ -z "$AUTO_CHOICE" ] || set -- "$@" "--auto-update=$AUTO_CHOICE"
+[ -z "$REBOOT_CHOICE" ] || set -- "$@" "--enable-reboot=$REBOOT_CHOICE"
+[ -z "$BYPASS_CHOICE" ] || set -- "$@" "--allow-vpn-bypass=$BYPASS_CHOICE"
+if [ "${NETRISER_NONINTERACTIVE:-0}" = 1 ] || ! ( : <>/dev/tty ) 2>/dev/null; then
+  echo 'No interactive terminal: new installations start in observation mode; existing settings are kept unless NETRISER_* variables select them.'
+  set -- "$@" --non-interactive
+else
+  echo 'Installation questions (answer them again at any time with: nr setup)'
 fi
-echo 'Observation mode is read-only: NetRiser records incidents but does not change routes, services, DNS or updates.'
-echo 'Turn on recovery later with: nr observe off'
-OBSERVE_CHOICE="$(choose_setting 'Start in observation (read-only) mode' "${NETRISER_OBSERVATION_MODE:-}" "$OBSERVE_DEFAULT")"
-AUTO_CHOICE="$(choose_setting 'Enable automatic updates' "${NETRISER_AUTO_UPDATE:-}" "$AUTO_DEFAULT")"
-REBOOT_CHOICE="$(choose_setting 'Allow emergency host reboot (off by default; fresh installs wait at least 5 minutes)' "${NETRISER_ENABLE_REBOOT:-}" "$REBOOT_DEFAULT")"
-echo "Installation choices: observation mode=$OBSERVE_CHOICE; automatic updates=$AUTO_CHOICE; emergency reboot=$REBOOT_CHOICE"
+if ! run_root "$@"; then
+  echo 'Setup was cancelled or failed; nothing was changed.' >&2
+  exit 1
+fi
 
 # Create a durable backup before stopping services or changing any installed file.
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -270,11 +254,7 @@ else
   run_root "$BIN" migrate
 fi
 echo "[7/8] Creating or preserving configuration: $EFFECTIVE_CONFIG"
-set -- "$BIN" --config "$EFFECTIVE_CONFIG" init-config
-[ "$OBSERVE_CHOICE" = keep ] || set -- "$@" "--observation-mode=$OBSERVE_CHOICE"
-[ "$AUTO_CHOICE" = keep ] || set -- "$@" "--auto-update=$AUTO_CHOICE"
-[ "$REBOOT_CHOICE" = keep ] || set -- "$@" "--enable-reboot=$REBOOT_CHOICE"
-run_root "$@"
+run_root "$BIN" --config "$EFFECTIVE_CONFIG" setup "--answers=$ANSWERS" --no-restart
 echo '[8/8] Starting NetRiser and verifying service state'
 if [ "$NEW_EXISTS" -eq 1 ]; then
   run_root "$BIN" service restart
@@ -304,6 +284,9 @@ fi
 run_root "$BIN" version
 echo "NetRiser installed. Rollback backup: $BACKUP"
 echo "License: MIT; license texts installed in $DOC_DIR"
-echo "Commands: nr status; nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status"
+echo "Commands: nr status; nr setup (answer the installation questions again); nr observe on|off|status; nr autoupdate on|off|status; nr reboot on|off|status"
+if run_root "$BIN" --config "$EFFECTIVE_CONFIG" observe status 2>/dev/null | grep -q 'Observation mode: ON'; then
+  echo 'NetRiser is in observation mode: it records incidents but changes nothing. Enable recovery with: nr observe off'
+fi
 echo "Logs: $(if [ "$OS" = linux ]; then echo 'journalctl -u netriser -f; /var/log/netriser.log'; else echo '/var/log/netriser.log'; fi)"
 SUCCESS=1

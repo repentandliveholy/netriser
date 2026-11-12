@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
-# Release package: five canonical binaries, SHA256 sums, updater manifest,
-# installer scripts, public docs, and a static landing page.
+# Release package: five canonical binaries, SHA256 sums, signed updater
+# manifest, installer scripts, public docs, and a static landing page.
+# The manifest is signed with the offline release key (see RELEASING.md):
+#   NETRISER_SIGNING_KEY=/path/to/release-signing.key ./scripts/build-release.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.2.6}"
+VERSION="${VERSION:-1.3.0}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
 RELEASE_PREFIX="releases/${VERSION}-${COMMIT}"
+SIGNING_KEY="${NETRISER_SIGNING_KEY:-$HOME/.config/netriser/release-signing.key}"
+if [[ ! -f "$SIGNING_KEY" ]]; then
+  echo "Release signing key not found: $SIGNING_KEY (set NETRISER_SIGNING_KEY)." >&2
+  echo "NetRiser 1.3+ refuses unsigned updates; see RELEASING.md." >&2
+  exit 2
+fi
 
 # Refuse to clean a symlink or anything except this repository's known dist path.
 EXPECTED_DIST="${SCRIPT_DIR}/dist"
@@ -60,7 +68,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.2.6: connectivity requires two answering internet targets (min_healthy_targets), and Windows stops a WireGuard kill-switch tunnel at stage 1. 1.2.5: fix Windows default-route listing that always reported failure, which disabled WireGuard and overlay recovery added in 1.2.3. 1.2.4: Windows ignores overlay default routes that carry no traffic (worse effective metric, such as ZeroTier metric 9999). 1.2.3: Windows recovery from WireGuard full tunnels with kill-switch and from a disabled uplink adapter, evidence-based overlay quarantine with correct Windows service names, and allowed_default_interfaces on Windows.",
+  "release_notes": "NetRiser 1.3.0: updates require an Ed25519-signed manifest and never downgrade; netriser setup asks every installation question and can be rerun; protocol-agnostic VPN/overlay detection (WireGuard, OpenVPN, IPsec, commercial VPN clients, Tailscale, ZeroTier, NetBird, Nebula, custom definitions); full-tunnel VPNs are left alone unless allow_vpn_bypass is enabled; new installations start in observation mode.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},
@@ -70,6 +78,14 @@ cat > "$DIST_DIR/version.json" <<EOF
   }
 }
 EOF
+
+# Sign the manifest (authenticates every binary checksum) and the checksum
+# list, then verify with the key built into this release so a mismatched key
+# can never be published.
+SIGN=(go run ./cmd/netriser-sign)
+"${SIGN[@]}" sign -key "$SIGNING_KEY" "$DIST_DIR/version.json" "$DIST_DIR/sha256sums.txt"
+"${SIGN[@]}" verify "$DIST_DIR/version.json" "$DIST_DIR/sha256sums.txt"
+"${SIGN[@]}" pubkey -key "$SIGNING_KEY" > "$DIST_DIR/netriser-release.pub"
 
 # Immutable paths keep a published manifest valid during future releases.
 mkdir -p "$DIST_DIR/$RELEASE_PREFIX/bin"
@@ -103,12 +119,13 @@ main{width:min(1040px,calc(100% - 36px));margin:auto}.top{padding:22px 0;border-
 </style></head><body><main>
 <header class="top"><div class="brand">NETRISER</div><a href="https://github.com/repentandliveholy/netriser">GitHub ↗</a></header>
 <section class="hero" style="border:0"><div class="eyebrow">Network resilience · v${VERSION}</div><h1>Lost access to a remote computer?</h1><p>A network change can cut off the very connection you need to fix it. NetRiser attempts automatic recovery of interfaces, routes, and DNS, helping you get back in before someone has to visit the machine and restart it.</p><div class="actions"><a class="button" href="bin/netriser-linux-amd64">Download Linux x86_64</a><a class="button secondary" href="https://github.com/repentandliveholy/netriser">Source and releases</a></div></section>
-<section><h2>Install</h2><p class="muted">The installer shows each step, creates configuration, and asks about read-only observation mode, automatic updates and emergency reboot. New installations default to observation off, updates on and reboot off; Enter preserves existing settings on a rerun. Linux and macOS need administrator privileges; Windows requires elevated PowerShell.</p>
+<section><h2>Install</h2><p class="muted">The installer verifies the download, then asks every setup question: observation mode, connectivity probes, VPNs and overlays on the host, recovery actions, emergency reboot and updates. New installations start in read-only observation mode and never bypass a full-tunnel VPN unless you allow it. Answer the questions again at any time with <code>nr setup</code>; Enter keeps the current setting. Linux and macOS need administrator privileges; Windows requires elevated PowerShell.</p>
 <div class="cmd" title="Click to copy"><pre>curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh</pre><button type="button" class="copy-btn" aria-label="Copy Linux/macOS install command" title="Copy command"><svg class="icon-copy" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><svg class="icon-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span class="btn-text">Copy</span></button></div>
 <div class="cmd" title="Click to copy"><pre>irm https://netriser.repentandliveholy.org/install.ps1 | iex</pre><button type="button" class="copy-btn" aria-label="Copy Windows PowerShell install command" title="Copy command"><svg class="icon-copy" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><svg class="icon-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span class="btn-text">Copy</span></button></div>
 </section>
-<section><h2>Downloads</h2><p class="muted">Release binaries are standalone Go executables. Verify a download against the published SHA-256 file.</p><div class="grid">
-<div class="card"><h3>Linux · x86_64</h3><a href="bin/netriser-linux-amd64">netriser-linux-amd64</a></div><div class="card"><h3>Linux · ARM64</h3><a href="bin/netriser-linux-arm64">netriser-linux-arm64</a></div><div class="card"><h3>Windows · x86_64</h3><a href="bin/netriser-windows-amd64.exe">netriser-windows-amd64.exe</a></div><div class="card"><h3>macOS · Apple Silicon</h3><a href="bin/netriser-darwin-arm64">netriser-darwin-arm64</a></div><div class="card"><h3>macOS · Intel</h3><a href="bin/netriser-darwin-amd64">netriser-darwin-amd64</a></div></div><p class="links"><a href="sha256sums.txt">SHA-256 checksums</a><a href="version.json">Update manifest</a><a href="README.md">Documentation</a><a href="LICENSE">MIT license</a><a href="THIRD_PARTY_NOTICES">Third-party licenses</a></p></section>
+<section><h2>Downloads</h2><p class="muted">Release binaries are standalone Go executables. The SHA-256 list and the update manifest carry Ed25519 signatures; installed copies accept only updates signed with the release key.</p><div class="grid">
+<div class="card"><h3>Linux · x86_64</h3><a href="bin/netriser-linux-amd64">netriser-linux-amd64</a></div><div class="card"><h3>Linux · ARM64</h3><a href="bin/netriser-linux-arm64">netriser-linux-arm64</a></div><div class="card"><h3>Windows · x86_64</h3><a href="bin/netriser-windows-amd64.exe">netriser-windows-amd64.exe</a></div><div class="card"><h3>macOS · Apple Silicon</h3><a href="bin/netriser-darwin-arm64">netriser-darwin-arm64</a></div><div class="card"><h3>macOS · Intel</h3><a href="bin/netriser-darwin-amd64">netriser-darwin-amd64</a></div></div><p class="links"><a href="sha256sums.txt">SHA-256 checksums</a><a href="sha256sums.txt.sig">Checksum signature</a><a href="version.json">Update manifest</a><a href="netriser-release.pub">Release public key</a><a href="README.md">Documentation</a><a href="LICENSE">MIT license</a><a href="THIRD_PARTY_NOTICES">Third-party licenses</a></p></section>
+<section><h2>Works with any VPN</h2><p class="muted">WireGuard, OpenVPN, IPsec, Tailscale/Headscale, ZeroTier, NetBird, Nebula, Yggdrasil, Mullvad, NordVPN, Cloudflare WARP, Cisco AnyConnect, GlobalProtect, FortiClient and generic tunnels are recognised out of the box; anything else can be described in the configuration.</p></section>
 <section><h2>Migration</h2><p class="muted">The installer keeps the existing configuration, state, logs, reboot policy, and update settings. It stops the old service, runs <code>netriser migrate</code>, then installs and starts the new service. The old service is restored if migration or service startup fails.</p><p class="links"><a href="MIGRATION.md">Migration guide</a><a href="config.example.yaml">Example configuration</a><a href="README.md">Full documentation</a></p></section>
 <footer class="foot">NetRiser ${VERSION} · Copyright &copy; 2026 Muslim Bayraktar · <a href="https://github.com/repentandliveholy/netriser">Source on GitHub</a> · <a href="README.md">Configuration and security notes</a> · <a href="LICENSE">MIT License</a></footer>
 </main>

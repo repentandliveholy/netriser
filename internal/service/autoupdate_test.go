@@ -35,6 +35,7 @@ func TestAutomaticUpdatesWaitForHealthyNetworkAndRespectSwitch(t *testing.T) {
 		})
 	}
 	cfg := config.DefaultConfig()
+	cfg.ObservationMode = false
 	if !automaticDue(cfg, true, now.Add(-5*time.Minute), time.Time{}, now) {
 		t.Fatal("first check never scheduled")
 	}

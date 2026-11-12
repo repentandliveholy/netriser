@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// Regex matching mesh/overlay interfaces
-var MeshIfaceRegex = regexp.MustCompile(`^(wt[0-9]*|zt[a-zA-Z0-9]*|tailscale[0-9]*|nebula[0-9]*|wg[-_a-zA-Z0-9]*|tun[0-9]*|tap[0-9]*|utun[0-9]*|feth[0-9]*)`)
-
 // Regex matching virtual/local non-physical interfaces to ignore
 var IgnoredIfaceRegex = regexp.MustCompile(`^(lo|docker[0-9]*|br-[a-f0-9]+|veth[a-f0-9]+|virbr[0-9]+|cni[0-9]+|flannel.*)`)
 
@@ -143,9 +140,11 @@ func LoadSavedBaseline(stateDir string) (Baseline, error) {
 	return b, err
 }
 
-// Helper to determine if interface name belongs to a mesh overlay.
+// IsMeshInterface reports whether an interface belongs to any recognised VPN
+// or overlay (built-in or configured), see overlays.go.
 func IsMeshInterface(name string) bool {
-	return MeshIfaceRegex.MatchString(name)
+	_, ok := ClassifyUnix(name)
+	return ok
 }
 
 // Helper to determine if interface should be ignored when looking for physical adapters.

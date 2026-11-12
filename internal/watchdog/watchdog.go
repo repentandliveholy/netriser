@@ -962,7 +962,7 @@ func (w *Watchdog) EvaluateDryRun(ctx context.Context) (*DryRunReport, error) {
 		}
 	case 2:
 		if decision.ActionAllowed {
-			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Quarantine suspect mesh services: %s", strings.Join(w.cfg.MonitoredServices, ", ")))
+			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Quarantine the service of an overlay that publishes a rogue route (eligible: %s)", strings.Join(w.cfg.MonitoredServices, ", ")))
 		} else {
 			report.PlannedActions = append(report.PlannedActions, fmt.Sprintf("Skip quarantine (%s)", decision.SkipReason))
 		}

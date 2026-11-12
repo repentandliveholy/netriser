@@ -760,9 +760,11 @@ func main() {
 		}
 
 		// Attempt to restart background service if installed and running
+		// (launchctl load reports success even when the plist is missing, so
+		// the service state is checked first.)
 		restarted := false
-		if err := svcMgr.Restart(); err == nil {
-			restarted = true
+		if state, err := svcMgr.Status(); err == nil && serviceRunning(state) {
+			restarted = svcMgr.Restart() == nil
 		}
 
 		if opts.jsonOutput {

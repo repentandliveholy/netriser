@@ -208,7 +208,7 @@ func TestSetupAsksLanguageFirstAndUsesIt(t *testing.T) {
 	}
 	text := flat(out.String())
 	if cfg.Language != "ru" || !strings.HasPrefix(text, "? Language / Язык / Langue") ||
-		!strings.Contains(text, "Начать в режиме наблюдения") || !strings.Contains(text, "Enter = yes (рекомендуется)") ||
+		!strings.Contains(text, "Начать в режиме наблюдения") || !strings.Contains(text, "Enter = yes (по умолчанию)") ||
 		strings.Contains(text, "Start in observation") {
 		t.Fatalf("language not applied (language=%q):\n%s", cfg.Language, text)
 	}
@@ -237,10 +237,10 @@ func TestPromptHints(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"Q1\n      [Y/n · Enter = yes (recommended)]: ",
-		"Q2\n      [y/N · Enter = no (current) · recommended: yes]: ",
-		"Q3\n      [Enter = auto (recommended)]: ",
-		"Q4\n      [comma separated · Enter = none (recommended)]: ",
+		"Q1\n      [Y/n · Enter = yes (default)]: ",
+		"Q2\n      [y/N · Enter = no (current) · default: yes]: ",
+		"Q3\n      [Enter = auto (default)]: ",
+		"Q4\n      [comma separated · Enter = none (default)]: ",
 		"Please answer y (yes) or n (no)",
 	} {
 		if !strings.Contains(text, want) {
@@ -257,7 +257,7 @@ func TestColoredPromptKeepsQuestionTerminator(t *testing.T) {
 	p := &prompter{r: bufio.NewReader(strings.NewReader("\n")), w: out, lang: "fr", s: term.Style{On: true}}
 	p.yesNo("Activer", true, ptr(true))
 	text := out.String()
-	if !strings.Contains(text, "\x1b[") || !strings.Contains(text, "]: ") || !strings.Contains(text, "Enter = yes (recommandé)") {
+	if !strings.Contains(text, "\x1b[") || !strings.Contains(text, "]: ") || !strings.Contains(text, "Enter = yes (par défaut)") {
 		t.Fatalf("unexpected colored prompt: %q", text)
 	}
 }

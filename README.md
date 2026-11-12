@@ -63,8 +63,8 @@ when something changed.
 The first question chooses the language of the questions: English, Русский or
 Français (stored as `language`; the installers ask it too, or take
 `NETRISER_LANG=en|ru|fr`). Every question explains what it does and shows what
-Enter selects, for example `[Y/n · Enter = yes (recommended)]` or
-`[Enter = no (current) · recommended: yes]`. Answers are `y`/`n` in every
+Enter selects, for example `[Y/n · Enter = yes (default)]` or
+`[Enter = no (current) · default: yes]`. Answers are `y`/`n` in every
 language. Output is colored on terminals;
 set `NO_COLOR=1` to disable colors. The questions cover:
 

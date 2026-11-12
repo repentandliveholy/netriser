@@ -90,9 +90,9 @@ var catalog = map[string]msg{
 	"yn_default_yes": {"Y/n", "Y/n", "Y/n"},
 	"yn_default_no":  {"y/N", "y/N", "y/N"},
 	"enter_is":       {"Enter = %s", "Enter = %s", "Enter = %s"},
-	"recommended":    {"recommended", "рекомендуется", "recommandé"},
+	"default_tag":    {"default", "по умолчанию", "par défaut"},
 	"current":        {"current", "текущее", "actuel"},
-	"recommended_is": {"recommended: %s", "рекомендуется: %s", "recommandé : %s"},
+	"default_is":     {"default: %s", "по умолчанию: %s", "par défaut : %s"},
 	"none":           {"none", "пусто", "aucun"},
 	"required":       {"required, type a value", "обязательно, введите значение", "obligatoire, saisissez une valeur"},
 	"list_hint":      {"comma separated", "через запятую", "séparés par des virgules"},
@@ -100,12 +100,14 @@ var catalog = map[string]msg{
 	"list_clear":     {"- = none", "- = пусто", "- = aucun"},
 	"yesno_retry":    {"Please answer y (yes) or n (no), or press Enter for the value shown after \"Enter =\".", "Ответьте y (yes, да) или n (no, нет), либо нажмите Enter, чтобы выбрать значение после «Enter =».", "Répondez y (yes, oui) ou n (no, non), ou appuyez sur Enter pour la valeur indiquée après « Enter = »."},
 	"integer_retry":  {"Please enter a whole number of at least %d.", "Введите целое число не меньше %d.", "Saisissez un nombre entier d'au moins %d."},
+	"need_root":      {"No permission to write %s: setup must run with administrator rights. Run it again with: sudo nr setup", "Нет прав на запись в %s: настройку нужно запускать с правами администратора. Запустите заново: sudo nr setup", "Pas de droit d'écriture sur %s : la configuration doit être lancée avec les droits d'administrateur. Relancez-la avec : sudo nr setup"},
+	"need_admin":     {"No permission to write %s: setup must run with administrator rights. Open PowerShell as Administrator and run: nr setup", "Нет прав на запись в %s: настройку нужно запускать с правами администратора. Откройте PowerShell от имени администратора и выполните: nr setup", "Pas de droit d'écriture sur %s : la configuration doit être lancée avec les droits d'administrateur. Ouvrez PowerShell en tant qu'administrateur et exécutez : nr setup"},
 	"cancelled":      {"Setup cancelled: nothing was changed.", "Настройка отменена: ничего не изменено.", "Configuration annulée : rien n'a été modifié."},
 
 	// Introduction.
 	"intro_saved":    {"NetRiser setup. Answers are saved to %s.", "Настройка NetRiser. Ответы будут сохранены в %s.", "Configuration de NetRiser. Les réponses sont enregistrées dans %s."},
 	"intro_existing": {"Defaults are your current settings: press Enter to keep each one.", "По умолчанию предлагаются ваши текущие настройки: нажмите Enter, чтобы оставить каждую из них.", "Les valeurs par défaut sont vos réglages actuels : appuyez sur Enter pour les conserver."},
-	"intro_new":      {"Defaults are the recommended values: press Enter to accept each one.", "По умолчанию предлагаются рекомендуемые значения: нажмите Enter, чтобы принять каждое из них.", "Les valeurs par défaut sont celles recommandées : appuyez sur Enter pour les accepter."},
+	"intro_new":      {"Each question shows the value Enter selects: press Enter to accept it.", "В каждом вопросе указано значение, которое выбирает Enter: нажмите Enter, чтобы принять его.", "Chaque question indique la valeur choisie par Enter : appuyez sur Enter pour l'accepter."},
 	"intro_howto":    {"How to answer: choose with ←/→ or y (yes) / n (no) and confirm with Enter. Enter alone accepts the highlighted or shown value. Ctrl+C cancels without changing anything.", "Как отвечать: выберите стрелками ←/→ или клавишами y (yes, да) / n (no, нет) и подтвердите Enter. Просто Enter принимает выделенное или указанное значение. Ctrl+C отменяет настройку без изменений.", "Comment répondre : choisissez avec ←/→ ou y (yes, oui) / n (no, non) et validez avec Enter. Enter seul accepte la valeur sélectionnée ou indiquée. Ctrl+C annule sans rien modifier."},
 	"intro_rerun":    {"Answer these questions again at any time with: netriser setup (short: nr setup)", "Ответить на эти вопросы заново можно в любой момент командой: netriser setup (коротко: nr setup)", "Vous pouvez répondre de nouveau à ces questions à tout moment avec : netriser setup (abrégé : nr setup)"},
 
@@ -157,7 +159,7 @@ var catalog = map[string]msg{
 
 	// Recovery.
 	"sec_recovery":         {"Recovery actions", "Действия по восстановлению", "Actions de rétablissement"},
-	"rec_explain":          {"When checks fail several times in a row, NetRiser escalates step by step, from the gentlest action to the strongest. Each stage can be switched off; keeping all three on is recommended.", "Если проверки не проходят несколько раз подряд, NetRiser действует поэтапно — от самого мягкого действия к самому сильному. Каждый этап можно отключить; рекомендуется оставить все три.", "Quand les vérifications échouent plusieurs fois de suite, NetRiser agit par étapes, de l'action la plus douce à la plus forte. Chaque étape peut être désactivée ; il est recommandé de garder les trois."},
+	"rec_explain":          {"When checks fail several times in a row, NetRiser escalates step by step, from the gentlest action to the strongest. Each stage can be switched off; by default all three are on.", "Если проверки не проходят несколько раз подряд, NetRiser действует поэтапно — от самого мягкого действия к самому сильному. Каждый этап можно отключить; по умолчанию включены все три.", "Quand les vérifications échouent plusieurs fois de suite, NetRiser agit par étapes, de l'action la plus douce à la plus forte. Chaque étape peut être désactivée ; par défaut, les trois sont activées."},
 	"s1_explain":           {"Stage 1 (safest) removes routes through which a VPN or mesh network wrongly took over all traffic, and restores the route through your normal connection.", "Этап 1 (самый безопасный) убирает маршруты, через которые VPN или mesh-сеть ошибочно забрали весь трафик, и возвращает маршрут через обычное подключение.", "L'étape 1 (la plus sûre) retire les routes par lesquelles un VPN ou un réseau maillé a pris à tort tout le trafic, et rétablit la route par votre connexion normale."},
 	"s1_q":                 {"Stage 1: remove rogue default routes published by overlays and restore the uplink route", "Этап 1: убирать посторонние маршруты по умолчанию, добавленные оверлейными сетями, и возвращать маршрут основного подключения", "Étape 1 : retirer les routes par défaut indésirables publiées par les réseaux overlay et rétablir la route de la connexion principale"},
 	"s2_explain":           {"Stage 2 temporarily stops the VPN or mesh service that took over the traffic. It is started again later, at most %d times if it keeps breaking the connection.", "Этап 2 временно останавливает службу VPN или mesh-сети, которая перехватила трафик. Позже она запускается снова — не больше %d раз, если продолжает нарушать связь.", "L'étape 2 arrête temporairement le service VPN ou réseau maillé qui a pris le trafic. Il est relancé plus tard, au plus %d fois s'il continue de couper la connexion."},

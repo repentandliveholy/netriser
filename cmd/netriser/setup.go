@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -54,6 +57,28 @@ func runSetup(opts cliOptions) int {
 	default:
 		fmt.Fprintln(os.Stderr, "Invalid --lang: use en, ru or fr.")
 		return 1
+	}
+
+	// Fail before the questions, not after them: applying the answers needs
+	// write access to the configuration (administrator rights by default).
+	if opts.saveAnswers == "" {
+		if err := configWritable(path); err != nil {
+			lang := opts.lang
+			if lang == "" {
+				lang = i18n.FromEnvironment()
+			}
+			key := "need_root"
+			if runtime.GOOS == "windows" {
+				key = "need_admin"
+			}
+			if !errors.Is(err, fs.ErrPermission) {
+				// Not a rights problem (read-only disk, missing drive): show it.
+				fmt.Fprintln(os.Stderr, "Configuration cannot be saved:", err)
+				return 1
+			}
+			fmt.Fprintln(os.Stderr, i18n.T(lang, key, path))
+			return 1
+		}
 	}
 
 	var values map[string]any
@@ -153,6 +178,37 @@ func runSetup(opts cliOptions) int {
 		}
 	}
 	return 0
+}
+
+// configWritable checks, without changing anything, that the configuration
+// file can be written: the file itself when it exists, otherwise its nearest
+// existing parent directory.
+func configWritable(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err == nil {
+		return f.Close()
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	for {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	tmp, err := os.CreateTemp(dir, ".netriser-access-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_ = tmp.Close()
+	return os.Remove(name)
 }
 
 func serviceRunning(state string) bool {

@@ -120,7 +120,7 @@ func (p *prompter) line(question, hint string) (string, error) {
 func (p *prompter) tag(isRecommended bool) string {
 	switch {
 	case isRecommended:
-		return p.t("recommended")
+		return p.t("default_tag")
 	case p.existing:
 		return p.t("current")
 	}
@@ -135,7 +135,7 @@ func (p *prompter) enter(value string, isRecommended bool, recommended string) s
 		s += " (" + tag + ")"
 	}
 	if recommended != "" && !isRecommended {
-		s += " · " + p.t("recommended_is", recommended)
+		s += " · " + p.t("default_is", recommended)
 	}
 	return s
 }
@@ -272,7 +272,7 @@ func (p *prompter) yesNo(question string, def bool, rec *bool) (bool, error) {
 	opts := []option{{label: "yes", key: 'y'}, {label: "no", key: 'n'}}
 	for i, v := range []bool{true, false} {
 		if rec != nil && *rec == v {
-			opts[i].note = p.t("recommended")
+			opts[i].note = p.t("default_tag")
 		} else if p.existing && v == def {
 			opts[i].note = p.t("current")
 		}

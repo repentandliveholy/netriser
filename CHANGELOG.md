@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.4 (not released yet)
+
+Setup
+- `nr setup` checks write access to the configuration before the first
+  question. Without administrator rights it stops at once and says to run
+  `sudo nr setup` (on Windows: PowerShell as Administrator); before, it asked
+  every question and failed only when saving.
+- The value Enter selects is marked "default" instead of "recommended".
+
 ## 1.3.3
 
 Access check

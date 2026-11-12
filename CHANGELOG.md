@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.5 (not released yet)
+
+Windows service
+- Restarting the service (also after an automatic update) waits until the
+  service has really stopped before starting it again, and retries the start.
+  Before, it waited one second; a service still finishing its check was then
+  stop-pending, the start failed and the service stayed stopped.
+
 ## 1.3.4
 
 Setup

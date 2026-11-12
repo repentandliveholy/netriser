@@ -96,9 +96,9 @@ func (m *WindowsServiceManager) Uninstall() error {
 	}
 	defer s.Close()
 
-	// Stop service if running
+	// Stop service if running, and wait so the files are no longer in use.
 	_, _ = s.Control(svc.Stop)
-	time.Sleep(1 * time.Second)
+	_ = waitServiceStopped(s, serviceStopTimeout)
 
 	if err := s.Delete(); err != nil {
 		return fmt.Errorf("failed to delete service: %w", err)
@@ -157,12 +157,38 @@ func (m *WindowsServiceManager) Restart() error {
 	}
 	defer s.Close()
 
+	// Stopping is asynchronous: the daemon finishes its current check first.
+	// Starting while the service is still stop-pending fails and would leave
+	// it stopped (an automatic update restarts the service this way).
 	_, _ = s.Control(svc.Stop)
-	time.Sleep(1 * time.Second)
-	if err := s.Start(); err != nil {
-		return fmt.Errorf("failed to start service %s after stop: %w", ServiceName, err)
+	if !waitServiceStopped(s, serviceStopTimeout) {
+		return fmt.Errorf("service %s did not stop within %v", ServiceName, serviceStopTimeout)
 	}
-	return nil
+	var startErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if startErr = s.Start(); startErr == nil {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("failed to start service %s after stop: %w", ServiceName, startErr)
+}
+
+const serviceStopTimeout = 90 * time.Second
+
+// waitServiceStopped polls the service until it reports Stopped.
+func waitServiceStopped(s *mgr.Service, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		st, err := s.Query()
+		if err == nil && st.State == svc.Stopped {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func (m *WindowsServiceManager) Status() (string, error) {

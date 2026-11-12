@@ -40,6 +40,15 @@ func runSetup(opts cliOptions) int {
 		}
 	}
 
+	switch opts.lang {
+	case "":
+	case "en", "ru", "fr":
+		explicit["language"] = opts.lang
+	default:
+		fmt.Fprintln(os.Stderr, "Invalid --lang: use en, ru or fr.")
+		return 1
+	}
+
 	var values map[string]any
 	if opts.answers != "" {
 		data, err := os.ReadFile(opts.answers)

@@ -76,6 +76,8 @@ type Config struct {
 	// is removed at once, even while the internet works, and not restarted.
 	// Unset (configurations from before 1.3.2) acts only when checks fail.
 	FullTunnel *bool `yaml:"full_tunnel"`
+	// Language of `netriser setup` and the installers: en, ru or fr.
+	Language string `yaml:"language"`
 
 	// Emergency reboot settings
 	EnableReboot          bool `yaml:"enable_reboot"`
@@ -294,6 +296,11 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate escalation thresholds: 0 < Stage1 <= Stage2 <= Stage3 <= Stage4Reboot
+	switch c.Language {
+	case "", "en", "ru", "fr":
+	default:
+		return fmt.Errorf("language must be en, ru or fr, got %q", c.Language)
+	}
 	if c.MaxRestoreAttempts < 0 {
 		return fmt.Errorf("max_restore_attempts must be 0 (unlimited) or positive, got %d", c.MaxRestoreAttempts)
 	}

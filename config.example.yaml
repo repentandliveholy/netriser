@@ -5,6 +5,9 @@
 # Paths (log_file, state_dir, incident_dir, lock_file) default to the
 # platform locations and may be added here to override them.
 
+# Language of `netriser setup` and the installers: en, ru or fr.
+language: en
+
 # Observation mode is read-only: it logs incidents and planned actions without
 # changing routes, services, DNS or the installed binary. New installations
 # start in observation mode. Toggle: nr observe on|off

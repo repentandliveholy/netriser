@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.3.3}"
+VERSION="${VERSION:-1.3.4}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
@@ -66,7 +66,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.3.3: mesh_canaries became a real access check (ping or host:port); when access is lost while the internet works, a full-tunnel host where access comes first bypasses the VPN, others log it. When the internet probes fail but system DNS and the router answer, the probes are treated as blocked: no network restart or reboot, only a hint to change canary_targets. Setup has numbered questions, arrow-key choices, a full summary and a clearer full-tunnel question.",
+  "release_notes": "NetRiser 1.3.4: Windows reads the physical adapter address from the system, so recovery no longer skips stages 1-2 while a VPN holds the default route (in a test the tunnel was removed by stage 1 instead of stage 4, 45 s instead of 2 min 45 s). Files at the old Mesh Watchdog paths move to the NetRiser locations. The service logs its start and stop. nr setup checks write access before the first question. nr status drops the misleading 24h reboot line. The Windows installer output is readable over SSH.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},

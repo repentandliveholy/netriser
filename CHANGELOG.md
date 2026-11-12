@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.4 (not released yet)
+## 1.3.4
 
 Setup
 - `nr setup` checks write access to the configuration before the first

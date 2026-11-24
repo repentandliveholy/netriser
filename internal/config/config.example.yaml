@@ -10,8 +10,8 @@ language: en
 
 # Observation mode is read-only: it logs incidents and planned actions without
 # changing routes, services, DNS or the installed binary. New installations
-# start in observation mode. Toggle: nr observe on|off
-observation_mode: true
+# recover (false). Toggle: nr observe on|off
+observation_mode: false
 
 # ---------------------------------------------------------------- probes ----
 # Public DNS/IP targets polled in parallel for connectivity checks (host:port).
@@ -111,6 +111,18 @@ allow_service_quarantine: true
 # stays stopped until you start it yourself. 0 = keep trying.
 max_restore_attempts: 3
 allow_network_restart: true
+
+# Local block recovery (Windows): the host connects to its own listening
+# access_ports (every 5 minutes while healthy, every check during an outage). When they do not accept their own host in
+# two checks in a row, something on the host itself blocks connections (for
+# example a firewall driver), so NetRiser disables the services and drivers
+# that are new since the host last worked (or, before the first snapshot,
+# drivers without a trusted signature). Microsoft components, device drivers,
+# remote access tools and VPN clients are never touched. A reboot, if still
+# needed, follows the enable_reboot rules. Undo: nr blockers restore all
+local_block_recovery: true
+access_ports: [22, 3389]
+protected_components: []         # extra names to never disable, e.g. ["MyAgent*"]
 
 # Emergency reboot is disabled unless explicitly enabled.
 enable_reboot: false

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/repentandliveholy/netriser/internal/config"
+	"github.com/repentandliveholy/netriser/internal/i18n"
+	"github.com/repentandliveholy/netriser/internal/install"
 	"github.com/repentandliveholy/netriser/internal/service"
 	"github.com/repentandliveholy/netriser/internal/term"
 	"github.com/repentandliveholy/netriser/internal/updater"
@@ -43,6 +45,8 @@ type cliOptions struct {
 	noRestart         bool
 	saveAnswers       string
 	answers           string
+	yes               bool
+	doubleClick       bool
 	commands          []string
 }
 
@@ -63,6 +67,10 @@ func parseCLIArgs(args []string) cliOptions {
 			opts.lang = strings.TrimPrefix(arg, "--lang=")
 		case strings.HasPrefix(arg, "--full-tunnel="):
 			opts.installFullTunnel = strings.TrimPrefix(arg, "--full-tunnel=")
+		case arg == "-y" || arg == "--yes":
+			opts.yes = true
+		case arg == "--double-click":
+			opts.doubleClick = true
 		case arg == "--non-interactive":
 			opts.nonInteractive = true
 		case arg == "--no-restart":
@@ -117,6 +125,8 @@ Usage:
   netriser [flags] <command> [subcommand]
 
 Commands:
+  install            Install or update NetRiser from this file (Windows; works
+                     offline). Double-clicking netriser.exe does the same.
   setup              Answer the installation questions again and apply them
   start              Start background watchdog service
   stop               Stop background watchdog service
@@ -142,6 +152,8 @@ Commands:
   service <cmd>      Manage OS service (install, uninstall, start, stop, restart, status)
   apply-policy       Enforce management policy routing (Table 200 on Linux)
   remove-policy      Remove custom management policy routing rules
+  blockers [cmd]     Software on this host that blocks connections (Windows):
+                     scan (default), disable [--yes], restore <name|all>
   reset              Reset failure counter (preserves quarantine history)
   version            Print version information
 
@@ -163,6 +175,7 @@ Flags:
   --save-answers=PATH   Ask the questions and save the answers without applying them (with 'setup')
   --answers=PATH        Apply previously saved answers without asking (with 'setup')
   --no-restart          Do not restart a running service after changes (with 'setup')
+  -y, --yes             Do not ask before disabling (with 'blockers disable')
   -v, --verbose         Enable verbose console logging (routed to stderr with --json)
   -h, --help            Show this help message
   -V, --version         Print version information
@@ -170,6 +183,10 @@ Flags:
 }
 
 func main() {
+	// Double-clicked in Explorer: this file is its own installer.
+	if len(os.Args) == 1 && install.LaunchedByDoubleClick() {
+		os.Exit(install.Run(install.Options{DoubleClick: true, Version: Version}))
+	}
 	opts := parseCLIArgs(os.Args[1:])
 
 	if opts.help {
@@ -214,6 +231,9 @@ func main() {
 			fmt.Println("No legacy configuration to migrate.")
 		}
 		return
+	}
+	if cmd == "install" {
+		os.Exit(install.Run(install.Options{ConfPath: opts.confPath, Lang: i18n.Normalize(opts.lang), Yes: opts.yes, DoubleClick: opts.doubleClick, Version: Version}))
 	}
 	if cmd == "setup" || cmd == "configure" {
 		os.Exit(runSetup(opts))
@@ -850,6 +870,9 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("Management policy routing removed.")
+
+	case "blockers", "blocker":
+		os.Exit(runBlockers(ctx, cfg, opts))
 
 	case "reset":
 		w := watchdog.NewWatchdog(cfg, true)

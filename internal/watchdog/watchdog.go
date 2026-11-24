@@ -29,6 +29,10 @@ type Watchdog struct {
 	// lastRogue suppresses repeating the same observation-mode warning.
 	lastRogue string
 	version   string
+	// dial connects to the host's own ports (local block check);
+	// lastLocalCheck is when that check last ran.
+	dial           netengine.DialFunc
+	lastLocalCheck time.Time
 }
 
 type CheckReport struct {
@@ -42,6 +46,7 @@ type CheckReport struct {
 	PostCanaryResult *canary.HealthResult     `json:"post_canary_result,omitempty"`
 	Remediated       bool                     `json:"remediated"`
 	AccessLost       bool                     `json:"access_lost,omitempty"`
+	LocalBlocked     bool                     `json:"local_blocked,omitempty"`
 	RemediationStage int                      `json:"remediation_stage"`
 	StageReason      string                   `json:"stage_reason,omitempty"`
 	ActionsTaken     []netengine.ActionResult `json:"actions_taken,omitempty"`
@@ -350,6 +355,17 @@ func (w *Watchdog) RunCheckCycle(ctx context.Context) (*CheckReport, error) {
 		CanaryResult:     canaryResult,
 		Remediated:       false,
 		ActionsTaken:     make([]netengine.ActionResult, 0),
+	}
+
+	// Software on the host itself holding connections (a firewall driver)
+	// is fixed before anything else: no other stage removes it.
+	if w.checkLocalBlock(ctx, baseline, canaryResult.Healthy, report) {
+		return report, nil
+	}
+	// checkLocalBlock saves its own counters; continue from the saved state
+	// so the steps below do not write the older copy over them.
+	if fresh, _ := w.stateMgr.LoadState(); fresh != nil {
+		state = fresh
 	}
 
 	if canaryResult.DNSOnlyFailure() {
@@ -960,28 +976,30 @@ func (w *Watchdog) guardRebootOutage(state *WatchdogState, allowed bool, reason 
 func (w *Watchdog) ConfigPath() string { return w.configPath }
 
 type StatusReport struct {
-	ConfigFile            string                    `json:"config_file"`
-	Baseline              netengine.Baseline        `json:"baseline"`
-	PolicyRoutingTable    int                       `json:"policy_routing_table"`
-	PolicyRoutingPriority int                       `json:"policy_routing_priority"`
-	AutoUpdate            bool                      `json:"auto_update"`
-	AutoUpdateIntervalSec int                       `json:"auto_update_interval_sec"`
-	CheckIntervalSec      int                       `json:"check_interval_sec"`
-	RecoveryIntervalSec   int                       `json:"recovery_interval_sec"`
-	RebootMinOutageSec    int                       `json:"reboot_min_outage_sec"`
-	EnableReboot          bool                      `json:"enable_reboot"`
-	DefaultRoutePolicy    string                    `json:"default_route_policy"`
-	RebootBudget24h       int                       `json:"reboot_budget_24h"`
-	RecentReboots24h      int                       `json:"recent_reboots_24h"`
-	RecoveryPaused        bool                      `json:"recovery_paused,omitempty"`
-	ProbesBlocked         bool                      `json:"probes_blocked,omitempty"`
-	AccessChecked         bool                      `json:"access_checked,omitempty"`
-	AccessOK              bool                      `json:"access_ok,omitempty"`
-	ObservationMode       bool                      `json:"observation_mode"`
-	ConsecutiveFailures   int                       `json:"consecutive_failures"`
-	QuarantinedServices   []ServiceQuarantineRecord `json:"quarantined_services"`
-	CanaryResults         canary.HealthResult       `json:"canary_results"`
-	Errors                []string                  `json:"errors,omitempty"`
+	ConfigFile            string                       `json:"config_file"`
+	Baseline              netengine.Baseline           `json:"baseline"`
+	PolicyRoutingTable    int                          `json:"policy_routing_table"`
+	PolicyRoutingPriority int                          `json:"policy_routing_priority"`
+	AutoUpdate            bool                         `json:"auto_update"`
+	AutoUpdateIntervalSec int                          `json:"auto_update_interval_sec"`
+	CheckIntervalSec      int                          `json:"check_interval_sec"`
+	RecoveryIntervalSec   int                          `json:"recovery_interval_sec"`
+	RebootMinOutageSec    int                          `json:"reboot_min_outage_sec"`
+	EnableReboot          bool                         `json:"enable_reboot"`
+	DefaultRoutePolicy    string                       `json:"default_route_policy"`
+	RebootBudget24h       int                          `json:"reboot_budget_24h"`
+	RecentReboots24h      int                          `json:"recent_reboots_24h"`
+	RecoveryPaused        bool                         `json:"recovery_paused,omitempty"`
+	ProbesBlocked         bool                         `json:"probes_blocked,omitempty"`
+	AccessChecked         bool                         `json:"access_checked,omitempty"`
+	AccessOK              bool                         `json:"access_ok,omitempty"`
+	LocalAccess           *netengine.LocalAccessResult `json:"local_access,omitempty"`
+	DisabledComponents    []DisabledComponent          `json:"disabled_components,omitempty"`
+	ObservationMode       bool                         `json:"observation_mode"`
+	ConsecutiveFailures   int                          `json:"consecutive_failures"`
+	QuarantinedServices   []ServiceQuarantineRecord    `json:"quarantined_services"`
+	CanaryResults         canary.HealthResult          `json:"canary_results"`
+	Errors                []string                     `json:"errors,omitempty"`
 }
 
 func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
@@ -1002,12 +1020,22 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 
 	fails := 0
 	var quarantined []ServiceQuarantineRecord
+	var disabled []DisabledComponent
 	if state != nil {
 		fails = state.FailCount
 		quarantined = state.QuarantinedServices
+		disabled = state.DisabledComponents
 	}
 
 	canaryRes := w.checker.CheckDetailed(ctx)
+
+	var local *netengine.LocalAccessResult
+	if be, ok := w.blockerEngine(); ok {
+		r := w.localAccess(ctx, be, baseline.IP)
+		if r.Tested() {
+			local = &r
+		}
+	}
 
 	cfgPath := w.configPath
 	if cfgPath == "" {
@@ -1046,6 +1074,8 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		AccessChecked:         canaryRes.AccessChecked,
 		AccessOK:              canaryRes.MeshHealthy,
 		QuarantinedServices:   quarantined,
+		LocalAccess:           local,
+		DisabledComponents:    disabled,
 		CanaryResults:         canaryRes,
 		Errors:                errs,
 	}
@@ -1095,6 +1125,20 @@ func (w *Watchdog) Status(ctx context.Context) string {
 		} else {
 			buf.WriteString("Remote Access:        LOST (no access address answers)\n")
 		}
+	}
+	if rep.LocalAccess != nil {
+		if rep.LocalAccess.Blocked() {
+			buf.WriteString(fmt.Sprintf("Local Access:         BLOCKED (%s): something on this host blocks connections; see nr blockers\n", rep.LocalAccess.Summary()))
+		} else {
+			buf.WriteString(fmt.Sprintf("Local Access:         ok (%s)\n", rep.LocalAccess.Summary()))
+		}
+	}
+	if len(rep.DisabledComponents) > 0 {
+		var names []string
+		for _, d := range rep.DisabledComponents {
+			names = append(names, d.Name)
+		}
+		buf.WriteString(fmt.Sprintf("Disabled Blockers:    %s (undo: nr blockers restore all)\n", strings.Join(names, ", ")))
 	}
 	if rep.RecoveryPaused {
 		buf.WriteString("Recovery Paused:      yes (no connectivity after the emergency reboot; only checking)\n")

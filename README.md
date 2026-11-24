@@ -30,6 +30,20 @@ curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh
 irm https://netriser.repentandliveholy.org/install.ps1 | iex
 ```
 
+**Windows without the internet (USB drive).** The program file is its own
+installer: double-click `netriser-windows-amd64.exe` (or run
+`netriser install` as Administrator). It asks for administrator rights,
+then at most three questions: the language; whether to disable software that
+blocks connections on the computer, if it finds some (see
+[Local block recovery](#local-block-recovery-windows)), and whether to restart
+Windows if that is still needed; otherwise whether to use the recommended
+settings (`n` asks every setup question). It installs to
+`%ProgramFiles%\NetRiser` with the same backup, rollback and migration as the
+PowerShell installer, and needs no network access. Windows may warn about a
+downloaded file ("Windows protected your PC": More info, Run anyway); a copy
+from a USB drive usually does not. `netriser install --yes` answers every
+question with its default.
+
 Downloads, checksums, and release metadata are available from the
 [distribution page](https://netriser.repentandliveholy.org). Source and release
 history are published at [GitHub](https://github.com/repentandliveholy/netriser).
@@ -50,8 +64,8 @@ curl -fsSL https://netriser.repentandliveholy.org/install.sh | \
   NETRISER_ALLOW_VPN_BYPASS=false sh
 ```
 
-Without a terminal, a new installation uses the safe defaults (observation mode
-on, VPN bypass off, reboot off, updates on); an existing installation keeps its
+Without a terminal, a new installation uses the defaults (recovery on, VPN
+bypass off, reboot off, updates on); an existing installation keeps its
 settings except those selected by the variables.
 
 ## Setup
@@ -69,7 +83,8 @@ language. Output is colored on terminals;
 set `NO_COLOR=1` to disable colors. The questions cover:
 
 1. **Observation mode**: read-only operation that records incidents and planned
-   actions without changing anything. New installations start here.
+   actions without changing anything, and so repairs nothing. Off for new
+   installations.
 2. **Connectivity probes**: the internet probes are tested live; if this network
    blocks them, enter targets it can reach. Optional mesh/VPN endpoints are
    monitored separately.
@@ -92,9 +107,9 @@ configuration without asking.
 
 ### Trying NetRiser on a production host
 
-Keep observation mode on. NetRiser then records incidents and the actions it
-would have taken, but changes no routes, services, DNS configuration or
-binaries. Review the log (`nr logs`, or `nr live` in real time) and the
+Turn observation mode on (answer yes in setup, or `nr observe on`). NetRiser
+then records incidents and the actions it would have taken, but changes no
+routes, services, DNS configuration or binaries. Review the log (`nr logs`, or `nr live` in real time) and the
 incident directory (`nr check-config` shows its path) for a while, then enable
 recovery with `nr observe off`. Switch back at any time with `nr observe on`.
 
@@ -132,7 +147,7 @@ Important settings:
 | `dns_canaries` | Hostnames used to check system DNS resolution. |
 | `allow_dns_recovery` | Permit restoration of a known healthy Linux resolver configuration. |
 | `management_interface`, `management_gateway` | Optional physical uplink overrides. |
-| `observation_mode` | Read-only mode: log incidents without recovery actions or updates. On for new installations. Toggle with `nr observe on\|off`. |
+| `observation_mode` | Read-only mode: log incidents without recovery actions or updates. Off for new installations. Toggle with `nr observe on\|off`. |
 | `allow_route_sanitation` | Permit targeted cleanup of suspicious routes. |
 | `allow_service_quarantine` | Permit stopping an overlay service that publishes a rogue route. |
 | `max_restore_attempts` | Restarts of a stopped overlay that may cut connectivity again before it is left stopped (default 3, `0` = unlimited). |
@@ -141,6 +156,9 @@ Important settings:
 | `allow_vpn_bypass` | Permit removing the routes of, or stopping, a full-tunnel VPN that cut the host off. Off for new installations. |
 | `overlays` | Definitions for VPNs and overlays that are not recognised automatically. |
 | `allow_network_restart` | Permit supported network-stack recovery. |
+| `local_block_recovery` | Windows: disable software on the host that blocks its own access ports (see [Local block recovery](#local-block-recovery-windows)). Default `true`. |
+| `access_ports` | TCP ports used for remote access and the local block check (default `[22, 3389]`). |
+| `protected_components` | Services and drivers local block recovery never disables, in addition to the built-in list (`*` wildcards allowed). |
 | `enable_reboot` | Permit emergency host reboot. Defaults to `false`. |
 | `auto_update`, `update_url` | Control update checks and the distribution endpoint. |
 | `update_public_keys` | Extra trusted release-signing keys for a self-hosted mirror. |
@@ -183,6 +201,48 @@ answer ping by default). If none answers in two consecutive checks while the
 internet works, a host with a full tunnel where access comes first stops the
 VPN that carries all traffic; other hosts log it. `nr status` shows
 "Remote Access".
+
+### Local block recovery (Windows)
+
+Software on the machine itself can cut it off while the machine keeps
+running: a firewall driver (a Windows Filtering Platform callout) that holds
+every new connection. The VPN client may still answer pings, but SSH and RDP
+time out. Route repair, network restarts and reboots do not help, because the
+driver is loaded again at startup.
+
+The host connects to its own listening `access_ports` on its own address
+(every 5 minutes while the internet checks pass, in every check during an
+outage or once a block was seen). Nothing outside the host is involved, so a failure means something on
+the host blocks it. After two such checks in a row NetRiser disables, by
+setting their start type to Disabled and stopping them:
+
+- the loaded drivers and automatic services that are new or changed since the
+  host last worked (a record of the working state, `components.json` in the
+  state directory, is updated at most hourly while checks pass; anything first
+  seen less than an hour before the block counts as new). When a new driver
+  is found, services are disabled only if they start it;
+- without such a record (NetRiser installed on a host that is already
+  blocked): loaded drivers created without a signed driver package and
+  without a trusted signature, which Windows loads only in test mode, and the
+  services that start them.
+
+Never disabled: components signed by Microsoft as part of Windows, device
+drivers, boot drivers, remote access tools and VPN clients (SSH, RDP,
+Tailscale, ZeroTier, NetBird, WireGuard, OpenVPN, AnyDesk, TeamViewer, Radmin,
+Cisco, Fortinet, GlobalProtect and others), and `protected_components`. If a
+disabled driver cannot be unloaded, a restart finishes the fix; it happens
+only with `enable_reboot`, once per outage. Otherwise the log says to restart.
+
+```sh
+nr blockers                  # local access check and what would be disabled now
+nr blockers disable          # disable it now (asks; --yes to skip the question)
+nr blockers restore all      # undo: set the previous start types back
+```
+
+The files stay in place. A restored component starts again at the next
+restart; if it blocks the host again, it is disabled again unless it is listed
+in `protected_components`. Filters that exempt the host's own connections
+(loopback) are not detected.
 
 Configurations without `full_tunnel` (before 1.3.2) keep the earlier
 behaviour: overlay routes are handled only when checks fail. `nr status` shows
@@ -261,6 +321,7 @@ netriser live                # log entries in real time (Ctrl+C to stop)
 netriser init-config         # create defaults if missing; keep an existing config
 netriser run                 # foreground mode
 netriser observe on|off      # read-only observation mode or active recovery
+netriser blockers            # Windows: software on this host blocking connections
 netriser service install     # install or update the system service
 netriser service stop
 netriser update --check

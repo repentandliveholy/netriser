@@ -22,7 +22,9 @@ func TestTemplateIsCompleteAndSafeForNewInstallations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ObservationMode || cfg.AllowVPNBypass || cfg.EnableReboot || !cfg.MonitorsService("anything") {
+	// New installations recover (observation off), but never bypass a VPN
+	// or reboot unless asked to.
+	if cfg.ObservationMode || !cfg.LocalBlockRecovery || len(cfg.AccessPorts) != 2 || cfg.AllowVPNBypass || cfg.EnableReboot || !cfg.MonitorsService("anything") {
 		t.Fatalf("unsafe template defaults: %+v", cfg)
 	}
 	values, _ := DefaultConfig().Values()

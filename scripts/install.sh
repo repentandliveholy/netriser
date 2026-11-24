@@ -33,7 +33,7 @@ msg_en() {
     sum_bad) printf '%s' 'No valid SHA-256 entry for %s in the checksum list. Nothing was installed.' ;;
     s4) printf '%s' '[4/8] Looking for an existing installation and its configuration' ;;
     cfg_file) printf '%s' 'Configuration file: %s' ;;
-    noint) printf '%s' 'No interactive terminal: a new installation starts in observation mode; existing settings are kept unless NETRISER_* variables select them.' ;;
+    noint) printf '%s' 'No interactive terminal: a new installation uses the default settings (recovery on); existing settings are kept unless NETRISER_* variables select them.' ;;
     ask) printf '%s' 'Installation questions follow (you can answer them again at any time with: nr setup)' ;;
     setup_fail) printf '%s' 'Setup was cancelled or failed; nothing was changed.' ;;
     s5) printf '%s' '[5/8] Saving a rollback backup (everything is restored from it if something fails): %s' ;;
@@ -74,7 +74,7 @@ msg_ru() {
     sum_bad) printf '%s' 'Для %s в списке контрольных сумм нет корректной записи SHA-256. Ничего не установлено.' ;;
     s4) printf '%s' '[4/8] Ищу прежнюю установку и её настройки' ;;
     cfg_file) printf '%s' 'Файл настроек: %s' ;;
-    noint) printf '%s' 'Интерактивного терминала нет: новая установка запустится в режиме наблюдения; существующие настройки сохранятся, если их не задают переменные NETRISER_*.' ;;
+    noint) printf '%s' 'Интерактивного терминала нет: новая установка получит настройки по умолчанию (восстановление включено); существующие настройки сохранятся, если их не задают переменные NETRISER_*.' ;;
     ask) printf '%s' 'Далее вопросы об установке (позже на них можно ответить снова командой: nr setup)' ;;
     setup_fail) printf '%s' 'Настройка отменена или не удалась; ничего не изменено.' ;;
     s5) printf '%s' '[5/8] Сохраняю резервную копию для отката (если что-то пойдёт не так, всё вернётся как было): %s' ;;
@@ -114,7 +114,7 @@ msg_fr() {
     sum_bad) printf '%s' "Aucune entrée SHA-256 valide pour %s dans la liste des sommes de contrôle. Rien n'a été installé." ;;
     s4) printf '%s' "[4/8] Recherche d'une installation existante et de sa configuration" ;;
     cfg_file) printf '%s' 'Fichier de configuration : %s' ;;
-    noint) printf '%s' "Aucun terminal interactif : une nouvelle installation démarre en mode observation ; les réglages existants sont conservés, sauf si des variables NETRISER_* les modifient." ;;
+    noint) printf '%s' 'Aucun terminal interactif : une nouvelle installation utilise les réglages par défaut (réparation activée) ; les réglages existants sont conservés, sauf si des variables NETRISER_* les modifient.' ;;
     ask) printf '%s' "Les questions d'installation suivent (vous pourrez y répondre à nouveau à tout moment avec : nr setup)" ;;
     setup_fail) printf '%s' "La configuration a été annulée ou a échoué ; rien n'a été modifié." ;;
     s5) printf '%s' "[5/8] Création d'une sauvegarde de retour arrière (tout en est restauré en cas de problème) : %s" ;;

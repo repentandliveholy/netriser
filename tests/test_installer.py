@@ -112,13 +112,13 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         result = self.run_pipe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         config = self.config.read_text()
-        # New installations start read-only and never bypass a VPN by default.
-        for line in ("observation_mode: true", "allow_vpn_bypass: false", "auto_update: true", "enable_reboot: false", "recovery_interval_sec: 15", "reboot_min_outage_sec: 300", "netriser setup"):
+        # New installations recover, but never bypass a VPN or reboot by default.
+        for line in ("observation_mode: false", "local_block_recovery: true", "allow_vpn_bypass: false", "auto_update: true", "enable_reboot: false", "recovery_interval_sec: 15", "reboot_min_outage_sec: 300", "netriser setup"):
             self.assertIn(line, config)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertIn("[8/8]", result.stdout)
-        self.assertIn("Observation mode (no recovery actions): yes", result.stdout)
-        self.assertIn("Enable recovery with: nr observe off", result.stdout)
+        self.assertIn("Observation mode (no recovery actions): no", result.stdout)
+        self.assertNotIn("Enable recovery with: nr observe off", result.stdout)
         self.assertIn("Automatic updates: yes", result.stdout)
         self.assertIn("Emergency reboot: no", result.stdout)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES"):

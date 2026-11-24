@@ -47,7 +47,7 @@ func TestFreshSetupDefaultsAreSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ObservationMode || cfg.AllowVPNBypass || cfg.EnableReboot || !cfg.AutoUpdate || len(cfg.AllowedDefaultInterfaces) != 0 || !cfg.UplinkOnly() {
+	if cfg.ObservationMode || !cfg.LocalBlockRecovery || cfg.AllowVPNBypass || cfg.EnableReboot || !cfg.AutoUpdate || len(cfg.AllowedDefaultInterfaces) != 0 || !cfg.UplinkOnly() {
 		t.Fatalf("unsafe defaults: %+v", cfg)
 	}
 	text := out.String()

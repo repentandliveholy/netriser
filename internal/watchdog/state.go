@@ -53,6 +53,25 @@ type WatchdogState struct {
 	// acted on this access loss.
 	AccessFailCount int  `json:"access_fail_count,omitempty"`
 	AccessActed     bool `json:"access_acted,omitempty"`
+	// LocalBlockCount counts consecutive checks in which the host could not
+	// connect to its own listening access ports; LocalBlockSince is when the
+	// first of them ran, LocalBlockActed marks that recovery has acted.
+	LocalBlockCount int       `json:"local_block_count,omitempty"`
+	LocalBlockSince time.Time `json:"local_block_since,omitempty"`
+	LocalBlockActed bool      `json:"local_block_acted,omitempty"`
+	// DisabledComponents were disabled by local block recovery; nr blockers
+	// restore sets them back.
+	DisabledComponents []DisabledComponent `json:"disabled_components,omitempty"`
+}
+
+// DisabledComponent is a service or driver disabled by local block recovery.
+type DisabledComponent struct {
+	Name          string    `json:"name"`
+	PreviousStart int       `json:"previous_start"`
+	Kernel        bool      `json:"kernel,omitempty"`
+	Image         string    `json:"image,omitempty"`
+	Reason        string    `json:"reason"`
+	DisabledAt    time.Time `json:"disabled_at"`
 }
 
 type StateManager struct {

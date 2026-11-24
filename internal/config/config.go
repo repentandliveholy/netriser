@@ -59,11 +59,21 @@ type Config struct {
 	FailThresholdStage4Reboot int `yaml:"fail_threshold_stage4_reboot"`
 
 	// Operational modes & action permissions
-	ObservationMode          bool     `yaml:"observation_mode"`
-	AllowRouteSanitation     bool     `yaml:"allow_route_sanitation"`
-	AllowServiceQuarantine   bool     `yaml:"allow_service_quarantine"`
-	MaxRestoreAttempts       int      `yaml:"max_restore_attempts"`
-	AllowNetworkRestart      bool     `yaml:"allow_network_restart"`
+	ObservationMode        bool `yaml:"observation_mode"`
+	AllowRouteSanitation   bool `yaml:"allow_route_sanitation"`
+	AllowServiceQuarantine bool `yaml:"allow_service_quarantine"`
+	MaxRestoreAttempts     int  `yaml:"max_restore_attempts"`
+	AllowNetworkRestart    bool `yaml:"allow_network_restart"`
+	// LocalBlockRecovery disables software that blocks connections on the
+	// host itself (a firewall driver holding SSH/RDP), found by connecting
+	// from the host to its own access_ports. Windows only.
+	LocalBlockRecovery bool `yaml:"local_block_recovery"`
+	// AccessPorts are the TCP ports remote access uses (SSH, RDP); the host
+	// connects to those it listens on to detect a local block.
+	AccessPorts []int `yaml:"access_ports"`
+	// ProtectedComponents are services and drivers local block recovery never
+	// disables, in addition to the built-in list ("*" wildcards allowed).
+	ProtectedComponents      []string `yaml:"protected_components"`
 	AllowedDefaultInterfaces []string `yaml:"allowed_default_interfaces"`
 	// AllowVPNBypass permits removing the routes of, or stopping, a full-tunnel
 	// VPN (WireGuard, OpenVPN, IPsec, commercial VPN clients) that cut the host
@@ -170,11 +180,14 @@ func DefaultConfig() *Config {
 		FailThresholdStage2:       2,
 		FailThresholdStage3:       3,
 		FailThresholdStage4Reboot: 5,
-		ObservationMode:           true, // New installations start read-only.
+		ObservationMode:           false, // New installations recover; nr observe on makes them read-only.
 		AllowRouteSanitation:      true,
 		AllowServiceQuarantine:    true,
 		MaxRestoreAttempts:        3,
 		AllowNetworkRestart:       true,
+		LocalBlockRecovery:        true,
+		AccessPorts:               []int{22, 3389},
+		ProtectedComponents:       []string{},
 		AllowedDefaultInterfaces:  []string{},
 		AllowVPNBypass:            false,
 		EnableReboot:              false, // Safe default: disabled by default
@@ -243,6 +256,11 @@ func (c *Config) Validate() error {
 	}
 	if c.CheckIntervalSec <= 0 {
 		return fmt.Errorf("check_interval_sec must be positive, got %d", c.CheckIntervalSec)
+	}
+	for _, p := range c.AccessPorts {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("access_ports: %d is not a TCP port", p)
+		}
 	}
 	if c.MinHealthyTargets < 1 {
 		return fmt.Errorf("min_healthy_targets must be at least 1, got %d", c.MinHealthyTargets)

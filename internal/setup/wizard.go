@@ -190,7 +190,7 @@ func (w *wizard) run(ctx context.Context, existing bool) error {
 	p.explain(p.t("obs_explain"))
 	var obsRec *bool
 	if !existing {
-		obsRec = ptr(true)
+		obsRec = ptr(false)
 	}
 	if _, err := w.yesNo("observation_mode", p.t("obs_q"), w.cur.ObservationMode, obsRec); err != nil {
 		return err

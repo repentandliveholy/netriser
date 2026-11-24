@@ -2,6 +2,56 @@
 
 ## 1.3.5 (not released yet)
 
+Local block recovery (Windows)
+- New: software on the host itself that blocks connections is found and
+  disabled. Every check, the host connects to its own listening
+  `access_ports` (22, 3389). When they do not accept their own host in two
+  checks in a row (a firewall driver holding connections, as an RFW test
+  build did on WS-OVS-010: Tailscale still answered pings, SSH and RDP did
+  not), NetRiser disables the loaded drivers and automatic services that are
+  new or changed since the host last worked, then checks again. Without a
+  record of the working state (NetRiser installed on an already blocked
+  host) only loaded drivers created without a signed driver package and
+  without a trusted signature (test mode) are chosen. Services that start a
+  chosen driver are disabled with it. Never touched: components signed by
+  Microsoft, device drivers, boot drivers, remote access tools and VPN
+  clients, and `protected_components`. If a disabled driver stays loaded, a
+  restart finishes the fix, within the emergency reboot rules.
+- In the field on 2026-11-24: WS-OVS-010 had been unreachable over SSH and
+  RDP for days, and restarting Windows did not help because the driver
+  started again with it. NetRiser was installed from a USB drive with the
+  self-installing `.exe`; 84 seconds after the service started it disabled
+  `RfwService` and the test-signed `RfwFilter` driver, and SSH and RDP
+  answered again without a restart.
+- Disabling only changes the start type (the files stay); `nr blockers
+  restore <name|all>` sets it back. `nr blockers` shows the local access
+  check and what would be disabled now; `nr blockers disable` disables it
+  after a question (or with `--yes`). `nr status` shows "Local Access" and
+  the components NetRiser disabled.
+- A record of the working state is kept in `components.json` in the state
+  directory, updated at most hourly while the host works.
+- Settings: `local_block_recovery` (default true), `access_ports`,
+  `protected_components`.
+
+Windows installer in the program
+- `netriser-windows-amd64.exe` installs itself: double-click it, or run
+  `netriser install` as Administrator. It needs no network access, so it
+  works from a USB drive on a computer that is cut off. Without
+  administrator rights it asks Windows for them. At most three questions:
+  the language, then either whether to disable software found blocking
+  connections (and to restart Windows if it stays loaded) or whether to use
+  the recommended settings (`n` asks every setup question).
+- Same steps as `install.ps1`: backup and rollback, replacing the program in
+  `%ProgramFiles%\NetRiser`, license files (now built in), moving Mesh
+  Watchdog files, configuration, service, `nr` command and PATH.
+- Started from a terminal without a command, the program still shows the
+  status; only a double-click starts the installer.
+
+Defaults
+- New installations recover instead of starting in observation mode
+  (`observation_mode: false`); setup suggests "no" for observation mode.
+  Existing configurations keep their setting.
+
 Windows service
 - Restarting the service (also after an automatic update) waits until the
   service has really stopped before starting it again, and retries the start.

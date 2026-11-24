@@ -1,9 +1,11 @@
 # NetRiser
 
-Ever broken a remote computer's network connection and lost the access you
-needed to fix it? NetRiser helps you get back in. It monitors connectivity and
-attempts targeted recovery before you need someone on site to restart the
-machine.
+Lost access to a remote computer? Or need to revive a broken one? NetRiser
+helps you get back in. It monitors connectivity and attempts targeted recovery
+before you need someone on site to restart the machine, and it finds and
+disables software and firewall rules on the machine itself that block remote
+access. On a machine that is already cut off, install it from a USB drive: it
+needs no internet and undoes what is blocking access.
 
 NetRiser is a cross-platform network watchdog for systems that use physical and
 mesh-network interfaces. It checks external and optional mesh connectivity,

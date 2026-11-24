@@ -43,6 +43,10 @@ PowerShell installer, and needs no network access. Windows may warn about a
 downloaded file ("Windows protected your PC": More info, Run anyway); a copy
 from a USB drive usually does not. `netriser install --yes` answers every
 question with its default.
+It is the same file that `install.ps1` downloads, so one program serves both
+cases: installed online on a reachable computer, or carried on a USB drive to
+one that cannot be reached. On Linux and macOS the program does not install
+itself; `install.sh` downloads it, so installing needs network access there.
 
 Downloads, checksums, and release metadata are available from the
 [distribution page](https://netriser.repentandliveholy.org). Source and release
@@ -243,6 +247,16 @@ The files stay in place. A restored component starts again at the next
 restart; if it blocks the host again, it is disabled again unless it is listed
 in `protected_components`. Filters that exempt the host's own connections
 (loopback) are not detected.
+
+Local block recovery is Windows only; Linux and macOS have the network
+recovery described above but not this check.
+
+In the field on 2026-11-24 a Windows workstation had been unreachable over SSH
+and RDP for days; restarting did not help because a test-signed firewall
+driver started again with Windows. NetRiser was installed from a USB drive
+with the double-click installer. 84 seconds after the service started it
+disabled the driver and the service that starts it, and SSH and RDP answered
+again without a restart.
 
 Configurations without `full_tunnel` (before 1.3.2) keep the earlier
 behaviour: overlay routes are handled only when checks fail. `nr status` shows

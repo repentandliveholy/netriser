@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.5 (not released yet)
+## 1.3.5
 
 Local block recovery (Windows)
 - New: software on the host itself that blocks connections is found and

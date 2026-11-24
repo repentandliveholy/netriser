@@ -138,6 +138,20 @@ exec ''' + shlex.quote(str(self.cli)) + ''' "$@"
         for line in ("# existing", "observation_mode: true", "auto_update: true", "enable_reboot: false", "allow_vpn_bypass: false", "check_interval_sec: 123", "state_dir: /custom/state"):
             self.assertIn(line, config)
 
+    def test_local_mode_installs_without_network(self):
+        # `netriser install` on Linux and macOS: the program file and license
+        # texts are local; nothing is downloaded and no checksum is needed.
+        self.command("curl", "echo 'network used' >&2; exit 7\n")
+        (self.dist / "sha256sums.txt").unlink()
+        self.env.update(NETRISER_LOCAL_BINARY=str(self.asset), NETRISER_LOCAL_DOCS=str(self.dist))
+        result = self.run_pipe()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("network used", result.stderr)
+        self.assertIn("without downloading", result.stdout)
+        self.assertTrue(self.config.exists())
+        self.assertTrue((self.root / "usr/local/sbin/netriser").exists())
+        self.assertTrue((self.root / "usr/local/share/doc/netriser/LICENSE").exists())
+
     def test_bad_checksum_does_not_install(self):
         self.asset.write_text(self.asset.read_text() + "# tampered\n")
         result = self.run_pipe()

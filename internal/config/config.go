@@ -66,8 +66,13 @@ type Config struct {
 	AllowNetworkRestart    bool `yaml:"allow_network_restart"`
 	// LocalBlockRecovery disables software that blocks connections on the
 	// host itself (a firewall driver holding SSH/RDP), found by connecting
-	// from the host to its own access_ports. Windows only.
+	// from the host to its own access_ports (Windows, Linux, macOS).
 	LocalBlockRecovery bool `yaml:"local_block_recovery"`
+	// LocalBlockUntrustedDrivers: when nothing is new since the host last
+	// worked, also consider loaded drivers without a trusted signature (test
+	// builds), even if they ran for a long time without blocking. False keeps
+	// recovery to what changed since the host last worked.
+	LocalBlockUntrustedDrivers bool `yaml:"local_block_untrusted_drivers"`
 	// AccessPorts are the TCP ports remote access uses (SSH, RDP); the host
 	// connects to those it listens on to detect a local block.
 	AccessPorts []int `yaml:"access_ports"`
@@ -162,45 +167,46 @@ func DefaultConfig() *Config {
 			"8.8.8.8:53",
 			"9.9.9.9:53",
 		},
-		HTTPFallbackURL:           "http://1.1.1.1",
-		DNSCanaries:               []string{"example.com", "iana.org"},
-		AllowDNSRecovery:          true,
-		MinHealthyTargets:         2,
-		MeshCanaries:              []string{},
-		CheckIntervalSec:          60,
-		RecoveryIntervalSec:       15,
-		ProbeTimeoutSec:           3,
-		ManagementInterface:       "",
-		ManagementGateway:         "",
-		PolicyRoutingTable:        200,
-		PolicyRoutingPriority:     100,
-		MonitoredServices:         []string{"*"},
-		Overlays:                  []OverlayConfig{},
-		FailThresholdStage1:       1,
-		FailThresholdStage2:       2,
-		FailThresholdStage3:       3,
-		FailThresholdStage4Reboot: 5,
-		ObservationMode:           false, // New installations recover; nr observe on makes them read-only.
-		AllowRouteSanitation:      true,
-		AllowServiceQuarantine:    true,
-		MaxRestoreAttempts:        3,
-		AllowNetworkRestart:       true,
-		LocalBlockRecovery:        true,
-		AccessPorts:               []int{22, 3389},
-		ProtectedComponents:       []string{},
-		AllowedDefaultInterfaces:  []string{},
-		AllowVPNBypass:            false,
-		EnableReboot:              false, // Safe default: disabled by default
-		RebootMinOutageSec:        300,
-		RebootGraceSec:            15,
-		RebootBudgetCount:         1,    // Max 1 reboot per window
-		RebootBudgetWindowSec:     3600, // anti-flapping cap; one reboot per outage applies too
-		StartupGraceSec:           60,   // Wait 60s after startup before allowing reboot
-		EnableSysRqFallback:       false,
-		UpdateURL:                 DefaultUpdateURL,
-		AutoUpdate:                true,
-		AutoUpdateIntervalSec:     21600,
-		UpdatePublicKeys:          []string{},
+		HTTPFallbackURL:            "http://1.1.1.1",
+		DNSCanaries:                []string{"example.com", "iana.org"},
+		AllowDNSRecovery:           true,
+		MinHealthyTargets:          2,
+		MeshCanaries:               []string{},
+		CheckIntervalSec:           60,
+		RecoveryIntervalSec:        15,
+		ProbeTimeoutSec:            3,
+		ManagementInterface:        "",
+		ManagementGateway:          "",
+		PolicyRoutingTable:         200,
+		PolicyRoutingPriority:      100,
+		MonitoredServices:          []string{"*"},
+		Overlays:                   []OverlayConfig{},
+		FailThresholdStage1:        1,
+		FailThresholdStage2:        2,
+		FailThresholdStage3:        3,
+		FailThresholdStage4Reboot:  5,
+		ObservationMode:            false, // New installations recover; nr observe on makes them read-only.
+		AllowRouteSanitation:       true,
+		AllowServiceQuarantine:     true,
+		MaxRestoreAttempts:         3,
+		AllowNetworkRestart:        true,
+		LocalBlockRecovery:         true,
+		LocalBlockUntrustedDrivers: true,
+		AccessPorts:                []int{22, 3389},
+		ProtectedComponents:        []string{},
+		AllowedDefaultInterfaces:   []string{},
+		AllowVPNBypass:             false,
+		EnableReboot:               false, // Safe default: disabled by default
+		RebootMinOutageSec:         300,
+		RebootGraceSec:             15,
+		RebootBudgetCount:          1,    // Max 1 reboot per window
+		RebootBudgetWindowSec:      3600, // anti-flapping cap; one reboot per outage applies too
+		StartupGraceSec:            60,   // Wait 60s after startup before allowing reboot
+		EnableSysRqFallback:        false,
+		UpdateURL:                  DefaultUpdateURL,
+		AutoUpdate:                 true,
+		AutoUpdateIntervalSec:      21600,
+		UpdatePublicKeys:           []string{},
 	}
 
 	switch runtime.GOOS {

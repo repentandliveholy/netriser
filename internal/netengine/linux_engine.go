@@ -19,6 +19,9 @@ type LinuxEngine struct {
 	cfg            *config.Config
 	runner         CommandRunner
 	resolvConfPath string // Empty selects /etc/resolv.conf; injectable for isolated tests.
+	// fsRoot prefixes /proc, /sys and /etc/modprobe.d paths of local block
+	// recovery; empty in production, a temporary tree in tests.
+	fsRoot string
 }
 
 func (e *LinuxEngine) run(ctx context.Context, timeout time.Duration, name string, args ...string) (string, error) {

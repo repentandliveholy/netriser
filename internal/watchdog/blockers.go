@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,12 +42,48 @@ func (w *Watchdog) blockerEngine() (netengine.BlockerEngine, bool) {
 }
 
 // localAccess connects from the host to its own listening access ports.
-func (w *Watchdog) localAccess(ctx context.Context, be netengine.BlockerEngine, ip string) netengine.LocalAccessResult {
+// On Linux and macOS the engine sends the connections over a virtual
+// Ethernet pair (netengine.LocalProber) and a failing port counts only if
+// it passed before (okPorts).
+func (w *Watchdog) localAccess(ctx context.Context, be netengine.BlockerEngine, ip string, okPorts []int) netengine.LocalAccessResult {
 	listening, err := be.ListeningPorts(ctx)
 	if err != nil {
 		return netengine.LocalAccessResult{Address: ip}
 	}
-	return netengine.TestLocalAccess(ctx, ip, w.cfg.AccessPorts, listening, selfConnectTimeout, w.dial)
+	prober, ok := be.(netengine.LocalProber)
+	if !ok || w.dial != nil {
+		return netengine.TestLocalAccess(ctx, ip, w.cfg.AccessPorts, listening, selfConnectTimeout, w.dial)
+	}
+	res := netengine.LocalAccessResult{Address: ip}
+	var ports []int
+	for _, p := range w.cfg.AccessPorts {
+		if netengine.ListensOn(listening[p], ip) {
+			ports = append(ports, p)
+		}
+	}
+	probes, err := prober.ProbeLocal(ctx, ip, ports, selfConnectTimeout)
+	if err != nil {
+		// Logged once per distinct error, not every check.
+		if msg := err.Error(); msg != w.probeErr {
+			w.probeErr = msg
+			w.logger.Warn("Local access check unavailable: the self-probe over a temporary virtual interface failed: %v", err)
+		}
+		return res
+	}
+	for _, p := range probes {
+		if !p.OK && !slices.Contains(okPorts, p.Port) {
+			res.Unproven = append(res.Unproven, p)
+			continue
+		}
+		res.Probes = append(res.Probes, p)
+	}
+	return res
+}
+
+// needsHistory reports whether failing ports count only after passing once.
+func needsHistory(be netengine.BlockerEngine) bool {
+	_, ok := be.(netengine.LocalProber)
+	return ok
 }
 
 // checkLocalBlock runs in every check. When the host cannot connect to its
@@ -67,7 +105,19 @@ func (w *Watchdog) checkLocalBlock(ctx context.Context, baseline netengine.Basel
 		return false
 	}
 	w.lastLocalCheck = now
-	res := w.localAccess(ctx, be, baseline.IP)
+	res := w.localAccess(ctx, be, baseline.IP, state.LocalPortsOK)
+	if needsHistory(be) {
+		added := false
+		for _, p := range res.Probes {
+			if p.OK && !slices.Contains(state.LocalPortsOK, p.Port) {
+				state.LocalPortsOK = append(state.LocalPortsOK, p.Port)
+				added = true
+			}
+		}
+		if added {
+			_ = w.stateMgr.SaveState(state)
+		}
+	}
 	if !res.Blocked() {
 		if state.LocalBlockCount > 0 || state.LocalBlockActed {
 			w.logger.Info("Local access restored: this host accepts connections to its own ports again (%s).", res.Summary())
@@ -100,7 +150,11 @@ func (w *Watchdog) checkLocalBlock(ctx context.Context, baseline netengine.Basel
 		return false
 	}
 	if len(blockers) == 0 {
-		w.logger.Warn("Local block: no service or driver is new since this host last worked (%s), and none lacks a trusted signature. Nothing was disabled; restarting Windows will not help if the cause loads again at startup.", snapshotLabel(snapTime))
+		if snapTime.IsZero() || w.cfg.LocalBlockUntrustedDrivers {
+			w.logger.Warn("Local block: nothing (service, driver, firewall rules) is new since this host last worked (%s), and no loaded driver or kernel module lacks a trusted signature. Nothing was disabled; restarting will not help if the cause loads again at startup.", snapshotLabel(snapTime))
+		} else {
+			w.logger.Warn("Local block: nothing (service, driver, firewall rules) is new since this host last worked (%s). Drivers and kernel modules without a trusted signature were not checked (local_block_untrusted_drivers: false). Nothing was disabled; restarting will not help if the cause loads again at startup.", snapshotLabel(snapTime))
+		}
 		return false
 	}
 	if w.cfg.ObservationMode {
@@ -115,7 +169,7 @@ func (w *Watchdog) checkLocalBlock(ctx context.Context, baseline netengine.Basel
 	if err := w.clock.Sleep(ctx, 3*time.Second); err != nil {
 		return false
 	}
-	after := w.localAccess(ctx, be, baseline.IP)
+	after := w.localAccess(ctx, be, baseline.IP, state.LocalPortsOK)
 	if !after.Blocked() {
 		w.logger.Recovery("Local access RESTORED by disabling %s (%s). Undo: nr blockers restore all", blockerNames(blockers), after.Summary())
 		report.Remediated = true
@@ -129,7 +183,15 @@ func (w *Watchdog) checkLocalBlock(ctx context.Context, baseline netengine.Basel
 	return false
 }
 
-// rebootForBlockers restarts Windows when disabled drivers stay loaded,
+// restartCommand is how the user restarts this system.
+func restartCommand() string {
+	if runtime.GOOS == "windows" {
+		return "shutdown /r /t 0"
+	}
+	return "sudo shutdown -r now"
+}
+
+// rebootForBlockers restarts the host when disabled drivers stay loaded,
 // within the emergency reboot rules (enable_reboot, budget, one per outage).
 func (w *Watchdog) rebootForBlockers(ctx context.Context, report *CheckReport) {
 	state, _ := w.stateMgr.LoadState()
@@ -144,12 +206,12 @@ func (w *Watchdog) rebootForBlockers(ctx context.Context, report *CheckReport) {
 		allowed, reason = false, "already rebooted during this outage"
 	}
 	if !allowed {
-		w.logger.Warn("Local block remains: the disabled components are still loaded. Restarting Windows completes the fix (%s): shutdown /r /t 0", reason)
+		w.logger.Warn("Local block remains: the disabled components are still loaded. Restarting completes the fix (%s): %s", reason, restartCommand())
 		report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{Type: netengine.ActionReboot, Target: "host", Status: netengine.ActionSkipped,
 			Description: "Restart to unload the disabled components skipped: " + reason})
 		return
 	}
-	w.logger.Recovery("Local block remains: the disabled components are still loaded. Restarting Windows to unload them; they stay disabled.")
+	w.logger.Recovery("Local block remains: the disabled components are still loaded. Restarting the host to unload them; they stay disabled.")
 	_ = w.rebootTracker.RecordReboot()
 	state.RebootedInOutage = true
 	if err := w.stateMgr.SaveState(state); err != nil {
@@ -157,7 +219,7 @@ func (w *Watchdog) rebootForBlockers(ctx context.Context, report *CheckReport) {
 		return
 	}
 	report.ActionsTaken = append(report.ActionsTaken, netengine.ActionResult{Type: netengine.ActionReboot, Target: "host", Status: netengine.ActionExecuted,
-		Description: "Restarted Windows to unload the disabled components"})
+		Description: "Restarted the host to unload the disabled components"})
 	_ = w.engine.EmergencyReboot(ctx, "unload components that block connections on this host")
 }
 
@@ -173,8 +235,12 @@ func (w *Watchdog) protectedComponents() []string {
 			}
 		}
 	}
+	if runtime.GOOS != "windows" {
+		out = append(out, netengine.DefaultProtectedUnixComponents...)
+	}
 	for _, o := range netengine.BuiltinOverlays() {
 		add(o.WindowsServices)
+		add(o.LinuxServices)
 	}
 	for _, o := range w.cfg.Overlays {
 		add(o.Services)
@@ -185,7 +251,10 @@ func (w *Watchdog) protectedComponents() []string {
 }
 
 // findBlockers chooses the components to disable for a block that started
-// at since. It returns the time of the working-state snapshot used.
+// at since. It returns the time of the working-state snapshot used. When the
+// snapshot shows nothing new and local_block_untrusted_drivers is on, the
+// rule used without a snapshot applies: a component that worked for hours
+// may still be a test build that began blocking later.
 func (w *Watchdog) findBlockers(ctx context.Context, be netengine.BlockerEngine, since time.Time) ([]netengine.Blocker, time.Time, error) {
 	comps, err := be.Components(ctx)
 	if err != nil {
@@ -200,30 +269,53 @@ func (w *Watchdog) findBlockers(ctx context.Context, be netengine.BlockerEngine,
 		since = w.clock.Now()
 	}
 	policy := netengine.BlockerPolicy{Snapshot: snap, KnownGoodBefore: since.Add(-knownGoodMargin), Protected: w.protectedComponents()}
-	sigs, err := be.Signatures(ctx, netengine.BlockerCandidates(comps, policy))
-	if err != nil {
-		return nil, snapTime, err
+	sigs := map[string]netengine.Signature{}
+	blockers, err := selectBlockers(ctx, be, comps, policy, sigs)
+	if err == nil && len(blockers) == 0 && snap != nil && w.cfg.LocalBlockUntrustedDrivers {
+		policy.Snapshot = nil
+		blockers, err = selectBlockers(ctx, be, comps, policy, sigs)
+	}
+	return blockers, snapTime, err
+}
+
+// selectBlockers checks the signatures SelectBlockers needs (caching them in
+// sigs) and returns its choice.
+func selectBlockers(ctx context.Context, be netengine.BlockerEngine, comps []netengine.Component, policy netengine.BlockerPolicy, sigs map[string]netengine.Signature) ([]netengine.Blocker, error) {
+	check := func(cs []netengine.Component) error {
+		var need []netengine.Component
+		for _, c := range cs {
+			if _, ok := sigs[strings.ToLower(c.Name)]; !ok {
+				need = append(need, c)
+			}
+		}
+		if len(need) == 0 {
+			return nil
+		}
+		more, err := be.Signatures(ctx, need)
+		for k, v := range more {
+			sigs[k] = v
+		}
+		return err
+	}
+	if err := check(netengine.BlockerCandidates(comps, policy)); err != nil {
+		return nil, err
 	}
 	blockers := netengine.SelectBlockers(comps, sigs, policy)
 	// Services added because they start a chosen driver: check them too, so
 	// a Windows service is never disabled.
-	var unchecked []netengine.Component
+	var added []netengine.Component
 	for _, b := range blockers {
 		if _, ok := sigs[strings.ToLower(b.Name)]; !ok {
-			unchecked = append(unchecked, b.Component)
+			added = append(added, b.Component)
 		}
 	}
-	if len(unchecked) > 0 {
-		more, err := be.Signatures(ctx, unchecked)
-		if err != nil {
-			return nil, snapTime, err
-		}
-		for k, v := range more {
-			sigs[k] = v
+	if len(added) > 0 {
+		if err := check(added); err != nil {
+			return nil, err
 		}
 		blockers = netengine.SelectBlockers(comps, sigs, policy)
 	}
-	return blockers, snapTime, nil
+	return blockers, nil
 }
 
 // DisableBlockers disables the given components and records them for undo.
@@ -235,7 +327,7 @@ func (w *Watchdog) DisableBlockers(ctx context.Context, blockers []netengine.Blo
 	var actions []netengine.ActionResult
 	var done []DisabledComponent
 	for _, b := range blockers {
-		a := be.DisableComponent(ctx, b.Component)
+		a := be.DisableComponent(ctx, b)
 		w.logger.Recovery("  - %s", a.String())
 		actions = append(actions, a)
 		if a.Status == netengine.ActionExecuted || a.Status == netengine.ActionPartial {
@@ -296,7 +388,11 @@ func (w *Watchdog) RestoreBlockers(ctx context.Context, names []string) ([]neten
 		if a.Status != netengine.ActionExecuted {
 			keep = append(keep, d)
 		} else {
-			w.logger.Info("Restored %s to %s start (nr blockers restore).", d.Name, netengine.StartName(d.PreviousStart))
+			if runtime.GOOS == "windows" {
+				w.logger.Info("Restored %s to %s start (nr blockers restore).", d.Name, netengine.StartName(d.PreviousStart))
+			} else {
+				w.logger.Info("Restored %s (nr blockers restore): %s", d.Name, a.Description)
+			}
 		}
 	}
 	state.DisabledComponents = keep
@@ -321,12 +417,13 @@ type BlockerScan struct {
 	Candidates []netengine.Blocker         `json:"would_disable"`
 	Disabled   []DisabledComponent         `json:"disabled"`
 	Enabled    bool                        `json:"local_block_recovery"`
+	Untrusted  bool                        `json:"local_block_untrusted_drivers"`
 }
 
 // ScanBlockers tests local access and lists what recovery would disable now,
 // without changing anything.
 func (w *Watchdog) ScanBlockers(ctx context.Context) (*BlockerScan, error) {
-	scan := &BlockerScan{Enabled: w.cfg.LocalBlockRecovery}
+	scan := &BlockerScan{Enabled: w.cfg.LocalBlockRecovery, Untrusted: w.cfg.LocalBlockUntrustedDrivers}
 	if state, _ := w.stateMgr.LoadStateReadOnly(); state != nil {
 		scan.Disabled = state.DisabledComponents
 	}
@@ -336,7 +433,11 @@ func (w *Watchdog) ScanBlockers(ctx context.Context) (*BlockerScan, error) {
 	}
 	scan.Supported = true
 	baseline, _ := w.engine.DetectBaseline(ctx)
-	scan.Access = w.localAccess(ctx, be, baseline.IP)
+	var okPorts []int
+	if state, _ := w.stateMgr.LoadStateReadOnly(); state != nil {
+		okPorts = state.LocalPortsOK
+	}
+	scan.Access = w.localAccess(ctx, be, baseline.IP, okPorts)
 	since := w.clock.Now()
 	if state, _ := w.stateMgr.LoadStateReadOnly(); state != nil && !state.LocalBlockSince.IsZero() {
 		since = state.LocalBlockSince
@@ -378,6 +479,11 @@ func (w *Watchdog) refreshSnapshot(ctx context.Context, be netengine.BlockerEngi
 		w.logger.Warn("Working-state snapshot not updated: %v", err)
 		return
 	}
+	if saver, ok := be.(netengine.WorkingStateSaver); ok {
+		if err := saver.SaveWorkingState(ctx, now); err != nil {
+			w.logger.Warn("Working copies of the firewall rules not saved: %v", err)
+		}
+	}
 	if snap == nil {
 		snap = &netengine.ComponentSnapshot{}
 	}
@@ -414,15 +520,15 @@ func blockerNames(bs []netengine.Blocker) string {
 func describeBlockers(bs []netengine.Blocker) string {
 	var parts []string
 	for _, b := range bs {
-		kind := "service"
-		if b.Kernel {
-			kind = "driver"
+		if b.Unix() {
+			parts = append(parts, fmt.Sprintf("%s (%s; %s)", b.Name, b.KindLabel(), b.Reason))
+			continue
 		}
 		signer := b.Sig.Signer
 		if signer == "" {
 			signer = "unsigned"
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s, %s; %s)", b.Name, kind, signer, b.Reason))
+		parts = append(parts, fmt.Sprintf("%s (%s, %s; %s)", b.Name, b.KindLabel(), signer, b.Reason))
 	}
 	return strings.Join(parts, "; ")
 }

@@ -1,5 +1,8 @@
 #!/usr/bin/env sh
 # NetRiser installer for Linux and macOS. Safe to run from a pipe.
+# `netriser install` runs a copy embedded in the program with
+# NETRISER_LOCAL_BINARY (the program itself) and NETRISER_LOCAL_DOCS (license
+# texts), so it installs without network access, for example from a USB drive.
 set -eu
 
 DIST_URL="${NETRISER_URL:-${WATCHDOG_URL:-https://netriser.repentandliveholy.org}}"
@@ -29,6 +32,8 @@ msg_en() {
     s1) printf '%s' '[1/8] Installing NetRiser for %s/%s: checking administrator access (sudo may ask for your password)' ;;
     s2a) printf '%s' '[2/8] Downloading the program: %s' ;;
     s2b) printf '%s' '[2/8] Downloading the license and third-party notices' ;;
+    s2l) printf '%s' '[2/8] Installing from this file, without downloading: %s' ;;
+    s3l) printf '%s' '[3/8] Using the program file you started (no checksum download offline)' ;;
     s3) printf '%s' '[3/8] Downloading checksums and verifying the SHA-256 of the program (protects against a damaged or tampered file)' ;;
     sum_bad) printf '%s' 'No valid SHA-256 entry for %s in the checksum list. Nothing was installed.' ;;
     s4) printf '%s' '[4/8] Looking for an existing installation and its configuration' ;;
@@ -49,6 +54,7 @@ msg_en() {
     c_status) printf '%s' 'show the current state' ;;
     c_logs) printf '%s' 'show recent log entries' ;;
     c_live) printf '%s' 'follow the log in real time (Ctrl+C to stop)' ;;
+    c_blockers) printf '%s' 'software or firewall rules on this computer that block connections' ;;
     c_setup) printf '%s' 'answer the installation questions again' ;;
     c_observe) printf '%s' 'observation mode: only records incidents, changes nothing' ;;
     c_autoupdate) printf '%s' 'automatic updates' ;;
@@ -70,6 +76,8 @@ msg_ru() {
     s1) printf '%s' '[1/8] Установка NetRiser для %s/%s: проверяю права администратора (sudo может запросить пароль)' ;;
     s2a) printf '%s' '[2/8] Скачиваю программу: %s' ;;
     s2b) printf '%s' '[2/8] Скачиваю лицензию и сведения о сторонних компонентах' ;;
+    s2l) printf '%s' '[2/8] Установка из этого файла, без скачивания: %s' ;;
+    s3l) printf '%s' '[3/8] Используется запущенный файл программы (без сети контрольные суммы не скачиваются)' ;;
     s3) printf '%s' '[3/8] Скачиваю контрольные суммы и проверяю SHA-256 программы (защита от повреждённого или подменённого файла)' ;;
     sum_bad) printf '%s' 'Для %s в списке контрольных сумм нет корректной записи SHA-256. Ничего не установлено.' ;;
     s4) printf '%s' '[4/8] Ищу прежнюю установку и её настройки' ;;
@@ -90,6 +98,7 @@ msg_ru() {
     c_status) printf '%s' 'показать текущее состояние' ;;
     c_logs) printf '%s' 'показать последние записи журнала' ;;
     c_live) printf '%s' 'следить за журналом в реальном времени (Ctrl+C - выход)' ;;
+    c_blockers) printf '%s' 'программы или правила файрвола на компьютере, блокирующие подключения' ;;
     c_setup) printf '%s' 'ответить на вопросы об установке заново' ;;
     c_observe) printf '%s' 'режим наблюдения: только записывает инциденты, ничего не меняет' ;;
     c_autoupdate) printf '%s' 'автоматические обновления' ;;
@@ -110,6 +119,8 @@ msg_fr() {
     s1) printf '%s' "[1/8] Installation de NetRiser pour %s/%s : vérification des droits d'administrateur (sudo peut demander votre mot de passe)" ;;
     s2a) printf '%s' '[2/8] Téléchargement du programme : %s' ;;
     s2b) printf '%s' '[2/8] Téléchargement de la licence et des mentions des composants tiers' ;;
+    s2l) printf '%s' "[2/8] Installation depuis ce fichier, sans téléchargement : %s" ;;
+    s3l) printf '%s' "[3/8] Utilisation du fichier du programme lancé (pas de sommes de contrôle téléchargées hors ligne)" ;;
     s3) printf '%s' '[3/8] Téléchargement des sommes de contrôle et vérification du SHA-256 du programme (protège contre un fichier endommagé ou altéré)' ;;
     sum_bad) printf '%s' "Aucune entrée SHA-256 valide pour %s dans la liste des sommes de contrôle. Rien n'a été installé." ;;
     s4) printf '%s' "[4/8] Recherche d'une installation existante et de sa configuration" ;;
@@ -130,6 +141,7 @@ msg_fr() {
     c_status) printf '%s' "afficher l'état actuel" ;;
     c_logs) printf '%s' 'afficher les dernières entrées du journal' ;;
     c_live) printf '%s' 'suivre le journal en temps réel (Ctrl+C pour arrêter)' ;;
+    c_blockers) printf '%s' "logiciels ou règles de pare-feu de cet ordinateur qui bloquent les connexions" ;;
     c_setup) printf '%s' "répondre de nouveau aux questions d'installation" ;;
     c_observe) printf '%s' "mode observation : enregistre les incidents sans rien modifier" ;;
     c_autoupdate) printf '%s' 'mises à jour automatiques' ;;
@@ -370,17 +382,25 @@ choose_language
 URL="${DIST_URL%/}/bin/${ASSET}"
 say_step s1 "$OS" "$ARCH"
 run_root true
-say_step s2a "$URL"
-fetch "$URL" "$STAGED"
-say_step s2b
-fetch "${DIST_URL%/}/LICENSE" "$WORK/LICENSE"
-fetch "${DIST_URL%/}/THIRD_PARTY_NOTICES" "$WORK/THIRD_PARTY_NOTICES"
-say_step s3
-fetch "${DIST_URL%/}/sha256sums.txt" "$SUMS"
-EXPECTED_HASH="$(awk -v name="$ASSET" '$2 == name {print $1; exit}' "$SUMS")"
-case "$EXPECTED_HASH" in *[!0123456789abcdefABCDEF]*|'') die sum_bad "$ASSET" ;; esac
-if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$EXPECTED_HASH" "$STAGED" | sha256sum -c - >/dev/null
-else printf '%s  %s\n' "$EXPECTED_HASH" "$STAGED" | shasum -a 256 -c - >/dev/null; fi
+if [ -n "${NETRISER_LOCAL_BINARY:-}" ]; then
+  say_step s2l "$NETRISER_LOCAL_BINARY"
+  cp "$NETRISER_LOCAL_BINARY" "$STAGED"
+  cp "$NETRISER_LOCAL_DOCS/LICENSE" "$WORK/LICENSE"
+  cp "$NETRISER_LOCAL_DOCS/THIRD_PARTY_NOTICES" "$WORK/THIRD_PARTY_NOTICES"
+  say_step s3l
+else
+  say_step s2a "$URL"
+  fetch "$URL" "$STAGED"
+  say_step s2b
+  fetch "${DIST_URL%/}/LICENSE" "$WORK/LICENSE"
+  fetch "${DIST_URL%/}/THIRD_PARTY_NOTICES" "$WORK/THIRD_PARTY_NOTICES"
+  say_step s3
+  fetch "${DIST_URL%/}/sha256sums.txt" "$SUMS"
+  EXPECTED_HASH="$(awk -v name="$ASSET" '$2 == name {print $1; exit}' "$SUMS")"
+  case "$EXPECTED_HASH" in *[!0123456789abcdefABCDEF]*|'') die sum_bad "$ASSET" ;; esac
+  if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$EXPECTED_HASH" "$STAGED" | sha256sum -c - >/dev/null
+  else printf '%s  %s\n' "$EXPECTED_HASH" "$STAGED" | shasum -a 256 -c - >/dev/null; fi
+fi
 chmod 755 "$STAGED"
 "$STAGED" version
 say_step s4
@@ -510,6 +530,7 @@ cmd_line 'nr status' c_status
 cmd_line 'nr logs' c_logs
 cmd_line 'nr live' c_live
 cmd_line 'nr setup' c_setup
+cmd_line 'nr blockers' c_blockers
 cmd_line 'nr observe on|off|status' c_observe
 cmd_line 'nr autoupdate on|off|status' c_autoupdate
 cmd_line 'nr reboot on|off|status' c_reboot

@@ -35,7 +35,7 @@ installer: double-click `netriser-windows-amd64.exe` (or run
 `netriser install` as Administrator). It asks for administrator rights,
 then at most three questions: the language; whether to disable software that
 blocks connections on the computer, if it finds some (see
-[Local block recovery](#local-block-recovery-windows)), and whether to restart
+[Local block recovery](#local-block-recovery)), and whether to restart
 Windows if that is still needed; otherwise whether to use the recommended
 settings (`n` asks every setup question). It installs to
 `%ProgramFiles%\NetRiser` with the same backup, rollback and migration as the
@@ -45,8 +45,20 @@ from a USB drive usually does not. `netriser install --yes` answers every
 question with its default.
 It is the same file that `install.ps1` downloads, so one program serves both
 cases: installed online on a reachable computer, or carried on a USB drive to
-one that cannot be reached. On Linux and macOS the program does not install
-itself; `install.sh` downloads it, so installing needs network access there.
+one that cannot be reached.
+
+**Linux and macOS without the internet.** Copy `netriser-<os>-<arch>` (from
+the Downloads section) to the machine and run:
+
+```sh
+chmod +x netriser-linux-amd64
+sudo ./netriser-linux-amd64 install
+```
+
+It runs the same steps as `install.sh` (questions, backup, migration,
+rollback, service) with this file instead of a download, and needs no network
+access. `--yes` answers every question with its default; `--lang=ru` selects
+the language.
 
 Downloads, checksums, and release metadata are available from the
 [distribution page](https://netriser.repentandliveholy.org). Source and release
@@ -160,7 +172,7 @@ Important settings:
 | `allow_vpn_bypass` | Permit removing the routes of, or stopping, a full-tunnel VPN that cut the host off. Off for new installations. |
 | `overlays` | Definitions for VPNs and overlays that are not recognised automatically. |
 | `allow_network_restart` | Permit supported network-stack recovery. |
-| `local_block_recovery` | Windows: disable software on the host that blocks its own access ports (see [Local block recovery](#local-block-recovery-windows)). Default `true`. |
+| `local_block_recovery` | Windows: disable software on the host that blocks its own access ports (see [Local block recovery](#local-block-recovery)). Default `true`. |
 | `access_ports` | TCP ports used for remote access and the local block check (default `[22, 3389]`). |
 | `protected_components` | Services and drivers local block recovery never disables, in addition to the built-in list (`*` wildcards allowed). |
 | `enable_reboot` | Permit emergency host reboot. Defaults to `false`. |
@@ -206,19 +218,22 @@ internet works, a host with a full tunnel where access comes first stops the
 VPN that carries all traffic; other hosts log it. `nr status` shows
 "Remote Access".
 
-### Local block recovery (Windows)
+### Local block recovery
 
 Software on the machine itself can cut it off while the machine keeps
 running: a firewall driver (a Windows Filtering Platform callout) that holds
-every new connection. The VPN client may still answer pings, but SSH and RDP
-time out. Route repair, network restarts and reboots do not help, because the
-driver is loaded again at startup.
+every new connection, a firewall rule or service that drops SSH, a kernel
+module. The VPN client may still answer pings, but SSH and RDP time out.
+Route repair, network restarts and reboots do not help, because the cause is
+loaded again at startup.
 
 The host connects to its own listening `access_ports` on its own address
 (every 5 minutes while the internet checks pass, in every check during an
-outage or once a block was seen). Nothing outside the host is involved, so a failure means something on
-the host blocks it. After two such checks in a row NetRiser disables, by
-setting their start type to Disabled and stopping them:
+outage or once a block was seen). Nothing outside the host is involved, so a
+failure means something on the host blocks it. After two such checks in a row
+NetRiser undoes what is new since the host last worked, then checks again.
+
+**Windows.** Disabled (start type set to Disabled and stopped):
 
 - the loaded drivers and automatic services that are new or changed since the
   host last worked (a record of the working state, `components.json` in the
@@ -228,7 +243,12 @@ setting their start type to Disabled and stopping them:
 - without such a record (NetRiser installed on a host that is already
   blocked): loaded drivers created without a signed driver package and
   without a trusted signature, which Windows loads only in test mode, and the
-  services that start them.
+  services that start them;
+- with a record, when nothing is new: the same untrusted drivers, even if
+  they ran for a long time without blocking (a test build can start blocking
+  later with nothing changed). Set `local_block_untrusted_drivers: false`
+  (asked in `nr setup` and by the `.exe` installer) to disable only what
+  changed since the host last worked.
 
 Never disabled: components signed by Microsoft as part of Windows, device
 drivers, boot drivers, remote access tools and VPN clients (SSH, RDP,
@@ -237,19 +257,61 @@ Cisco, Fortinet, GlobalProtect and others), and `protected_components`. If a
 disabled driver cannot be unloaded, a restart finishes the fix; it happens
 only with `enable_reboot`, once per outage. Otherwise the log says to restart.
 
+**Linux and macOS.** A connection from the host to its own address goes over
+loopback there, and firewalls usually let loopback through, so NetRiser
+creates a temporary virtual Ethernet pair for each check (Linux: `nrprobe0`
+and `nrprobe1`, veth; macOS: `feth3170` and `feth3171`) with the addresses
+198.18.231.1–2, sends a TCP SYN to the host's address from the far side and
+removes the pair afterwards. The connection arrives on a real interface and
+passes the input rules like a remote one. Policy routing rules for the
+host's address (NetRiser's own management table, VPN clients) are bypassed
+for the probe addresses during the check. On macOS with
+`net.inet.ip.check_interface=1` (strong host model, which drops a packet for
+the address of en0 that arrives on another interface) the probe asks for the
+pair's own address, 198.18.231.1, instead; pf rules limited to en0 are then
+not seen. A port counts only after it has
+accepted this check at least once: a firewall that admits SSH only from
+certain networks or interfaces is not mistaken for a block (`nr blockers`
+lists such ports as "Not counted").
+
+Undone, when new or changed since the host last worked:
+
+- Linux: nftables tables and iptables tables (legacy and nft backends) that
+  filter traffic to or from the host: a new table is removed (a new iptables
+  table emptied), a changed one is put back to its copy from before the
+  change (copies are kept in `rules/` in the state directory while checks
+  pass). Changes in chains managed by Docker, Kubernetes, VPN clients and ban
+  tools (fail2ban, CrowdSec) and set contents are ignored. Enabled systemd
+  services that load firewall rules (firewalld, ufw, nftables, iptables,
+  shorewall, a unit running `nft`, `iptables`, `ipset` and the like) are
+  stopped and disabled. Kernel modules without a signature built outside the
+  kernel tree are blocked from loading (`/etc/modprobe.d/netriser-disabled-*`)
+  and unloaded; without a record, or when nothing is new and
+  `local_block_untrusted_drivers` is on, they are chosen even if old.
+  Graphics, ZFS and virtualization modules are never touched.
+- macOS: pf turned on, the pf ruleset and anchors (Apple's own anchors
+  excepted), the application firewall's "Block all incoming connections",
+  and launch daemons in `/Library/LaunchDaemons` that load firewall rules
+  (`launchctl disable`). Network extensions (content filters such as LuLu or
+  Little Snitch) are only reported: removing one needs your approval in
+  System Settings.
+
+Never touched on Linux and macOS: SSH, remote desktop tools, VPN and overlay
+clients, NetworkManager, systemd-networkd and resolved, Docker and
+Kubernetes, NetRiser, and `protected_components`.
+
 ```sh
 nr blockers                  # local access check and what would be disabled now
 nr blockers disable          # disable it now (asks; --yes to skip the question)
-nr blockers restore all      # undo: set the previous start types back
+nr blockers restore all      # undo: start types, services, rules and modules back
 ```
 
-The files stay in place. A restored component starts again at the next
-restart; if it blocks the host again, it is disabled again unless it is listed
-in `protected_components`. Filters that exempt the host's own connections
-(loopback) are not detected.
-
-Local block recovery is Windows only; Linux and macOS have the network
-recovery described above but not this check.
+The files stay in place. A restored Windows component or Linux/macOS service
+starts again at the next restart; restored rules are loaded at once. If it
+blocks the host again, it is disabled again unless it is listed in
+`protected_components`. On Windows, filters that exempt the host's own
+connections (loopback) are not detected. If a firewall service loads the old
+rules again at boot, the check finds the block again and repeats the undo.
 
 In the field on 2026-11-24 a Windows workstation had been unreachable over SSH
 and RDP for days; restarting did not help because a test-signed firewall
@@ -335,7 +397,7 @@ netriser live                # log entries in real time (Ctrl+C to stop)
 netriser init-config         # create defaults if missing; keep an existing config
 netriser run                 # foreground mode
 netriser observe on|off      # read-only observation mode or active recovery
-netriser blockers            # Windows: software on this host blocking connections
+netriser blockers            # software or firewall rules on this host blocking connections
 netriser service install     # install or update the system service
 netriser service stop
 netriser update --check

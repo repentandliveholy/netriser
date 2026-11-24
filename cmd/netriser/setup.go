@@ -29,11 +29,12 @@ func runSetup(opts cliOptions) int {
 	}
 	explicit := map[string]any{}
 	for key, raw := range map[string]string{
-		"observation_mode": opts.installObserve,
-		"auto_update":      opts.installAutoUpdate,
-		"enable_reboot":    opts.installReboot,
-		"allow_vpn_bypass": opts.installVPNBypass,
-		"full_tunnel":      opts.installFullTunnel,
+		"observation_mode":              opts.installObserve,
+		"auto_update":                   opts.installAutoUpdate,
+		"enable_reboot":                 opts.installReboot,
+		"allow_vpn_bypass":              opts.installVPNBypass,
+		"full_tunnel":                   opts.installFullTunnel,
+		"local_block_untrusted_drivers": opts.installUntrusted,
 	} {
 		v, err := optionalBool(raw)
 		if err != nil {

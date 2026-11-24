@@ -59,6 +59,10 @@ type WatchdogState struct {
 	LocalBlockCount int       `json:"local_block_count,omitempty"`
 	LocalBlockSince time.Time `json:"local_block_since,omitempty"`
 	LocalBlockActed bool      `json:"local_block_acted,omitempty"`
+	// LocalPortsOK lists the access ports that accepted the self-probe at
+	// least once (Linux, macOS). A port that never did is filtered by
+	// design, not blocked, and is not counted.
+	LocalPortsOK []int `json:"local_ports_ok,omitempty"`
 	// DisabledComponents were disabled by local block recovery; nr blockers
 	// restore sets them back.
 	DisabledComponents []DisabledComponent `json:"disabled_components,omitempty"`

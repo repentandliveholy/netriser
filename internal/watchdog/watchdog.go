@@ -32,6 +32,7 @@ type Watchdog struct {
 	// dial connects to the host's own ports (local block check);
 	// lastLocalCheck is when that check last ran.
 	dial           netengine.DialFunc
+	probeErr       string // last self-probe error logged
 	lastLocalCheck time.Time
 }
 
@@ -995,11 +996,19 @@ type StatusReport struct {
 	AccessOK              bool                         `json:"access_ok,omitempty"`
 	LocalAccess           *netengine.LocalAccessResult `json:"local_access,omitempty"`
 	DisabledComponents    []DisabledComponent          `json:"disabled_components,omitempty"`
-	ObservationMode       bool                         `json:"observation_mode"`
-	ConsecutiveFailures   int                          `json:"consecutive_failures"`
-	QuarantinedServices   []ServiceQuarantineRecord    `json:"quarantined_services"`
-	CanaryResults         canary.HealthResult          `json:"canary_results"`
-	Errors                []string                     `json:"errors,omitempty"`
+	// LocalBlockRecovery is shown where it runs (nil elsewhere).
+	LocalBlockRecovery  *LocalBlockSettings       `json:"local_block_recovery,omitempty"`
+	ObservationMode     bool                      `json:"observation_mode"`
+	ConsecutiveFailures int                       `json:"consecutive_failures"`
+	QuarantinedServices []ServiceQuarantineRecord `json:"quarantined_services"`
+	CanaryResults       canary.HealthResult       `json:"canary_results"`
+	Errors              []string                  `json:"errors,omitempty"`
+}
+
+// LocalBlockSettings summarizes local block recovery for nr status.
+type LocalBlockSettings struct {
+	Enabled          bool `json:"enabled"`
+	UntrustedDrivers bool `json:"untrusted_drivers"`
 }
 
 func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
@@ -1030,8 +1039,16 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 	canaryRes := w.checker.CheckDetailed(ctx)
 
 	var local *netengine.LocalAccessResult
+	var lbr *LocalBlockSettings
+	if _, ok := w.engine.(netengine.BlockerEngine); ok {
+		lbr = &LocalBlockSettings{Enabled: w.cfg.LocalBlockRecovery && len(w.cfg.AccessPorts) > 0, UntrustedDrivers: w.cfg.LocalBlockUntrustedDrivers}
+	}
 	if be, ok := w.blockerEngine(); ok {
-		r := w.localAccess(ctx, be, baseline.IP)
+		var okPorts []int
+		if state != nil {
+			okPorts = state.LocalPortsOK
+		}
+		r := w.localAccess(ctx, be, baseline.IP, okPorts)
 		if r.Tested() {
 			local = &r
 		}
@@ -1076,6 +1093,7 @@ func (w *Watchdog) StatusReport(ctx context.Context) (*StatusReport, error) {
 		QuarantinedServices:   quarantined,
 		LocalAccess:           local,
 		DisabledComponents:    disabled,
+		LocalBlockRecovery:    lbr,
 		CanaryResults:         canaryRes,
 		Errors:                errs,
 	}
@@ -1124,6 +1142,16 @@ func (w *Watchdog) Status(ctx context.Context) string {
 			buf.WriteString("Remote Access:        ok (an access address answers)\n")
 		} else {
 			buf.WriteString("Remote Access:        LOST (no access address answers)\n")
+		}
+	}
+	if l := rep.LocalBlockRecovery; l != nil {
+		switch {
+		case !l.Enabled:
+			buf.WriteString("Local Block Recovery: off (local_block_recovery: false, or no access_ports)\n")
+		case l.UntrustedDrivers:
+			buf.WriteString("Local Block Recovery: on (what is new since the host last worked; else drivers without a trusted signature)\n")
+		default:
+			buf.WriteString("Local Block Recovery: on (only what is new since the host last worked)\n")
 		}
 	}
 	if rep.LocalAccess != nil {

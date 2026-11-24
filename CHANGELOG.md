@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.3.6 (not released yet)
+
+Local block recovery on Linux and macOS
+- The same recovery as on Windows. A connection to the host's own address
+  goes over loopback there, which firewalls usually accept, so each check
+  creates a temporary virtual Ethernet pair (Linux veth `nrprobe0/1`, macOS
+  feth `feth3170/3171`, addresses 198.18.231.1–2), sends a TCP SYN to the
+  host's address from the far side over a raw socket (AF_PACKET, BPF) and
+  removes the pair (with a temporary `ip rule` so that source-based policy
+  routing, NetRiser's own included, does not send the answer elsewhere; on
+  macOS with `check_interface=1` the probe targets the pair's address).
+  A port counts only after it has passed this check once,
+  so a firewall admitting SSH only from certain networks is not a block.
+- Linux: new nftables and iptables tables (legacy and nft backends) are
+  removed or emptied, changed ones put back to a copy from before the change
+  (kept in `rules/` in the state directory; Docker, Kubernetes, VPN and
+  fail2ban/CrowdSec chains and set contents are ignored); new enabled
+  services that load firewall rules are stopped and disabled; unsigned
+  out-of-tree kernel modules are blocked from loading and unloaded.
+- macOS: pf turned on, new or changed pf rules and anchors (not Apple's),
+  the application firewall's "block all incoming connections" and firewall
+  launch daemons; network extensions are reported only.
+- `nr blockers` lists ports that never passed as "Not counted"; restore
+  loads the saved rules, re-enables services and lets modules load again.
+
+Offline installation on Linux and macOS
+- `sudo ./netriser-<os>-<arch> install` installs from the file itself,
+  without network access: the program carries `install.sh` and runs it with
+  the local file (same questions, backup, migration and rollback). The
+  installer lists `nr blockers` among the useful commands.
+
+Site
+- The first download button follows the visitor's system (Windows,
+  macOS Apple Silicon with an Intel link, Linux x86_64 or ARM64); on Windows
+  the PowerShell command is listed first. Without JavaScript it links to the
+  Downloads section.
+
+Local block recovery (Windows)
+- A test-signed driver that worked for more than an hour and then began
+  blocking was not suspected: the record of the working state counted it as
+  known, and the untrusted-driver rule ran only without a record. Now, when
+  nothing is new since the host last worked, loaded drivers without a
+  trusted signature (created without a signed driver package) and the
+  services that start them are chosen as well.
+- New setting `local_block_untrusted_drivers` (default `true`); `false` keeps
+  recovery to what changed since the host last worked. Asked in `nr setup`
+  and by the `.exe` installer (`--untrusted-drivers=bool` for `setup`), shown
+  in `nr status` ("Local Block Recovery") and `nr blockers` ("Rule").
+
 ## 1.3.5
 
 Local block recovery (Windows)

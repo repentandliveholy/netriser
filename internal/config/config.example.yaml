@@ -112,15 +112,24 @@ allow_service_quarantine: true
 max_restore_attempts: 3
 allow_network_restart: true
 
-# Local block recovery (Windows): the host connects to its own listening
-# access_ports (every 5 minutes while healthy, every check during an outage). When they do not accept their own host in
-# two checks in a row, something on the host itself blocks connections (for
-# example a firewall driver), so NetRiser disables the services and drivers
-# that are new since the host last worked (or, before the first snapshot,
-# drivers without a trusted signature). Microsoft components, device drivers,
-# remote access tools and VPN clients are never touched. A reboot, if still
-# needed, follows the enable_reboot rules. Undo: nr blockers restore all
+# Local block recovery: the host connects to its own listening access_ports
+# (every 5 minutes while healthy, every check during an outage; on Linux and
+# macOS through a temporary virtual Ethernet pair, so that loopback rules do
+# not hide a block). When they do not accept their own host in two checks in
+# a row, something on the host itself blocks connections, so NetRiser undoes
+# what is new since the host last worked: Windows services and drivers (before
+# the first snapshot: drivers without a trusted signature); Linux firewall
+# tables, firewall services and unsigned out-of-tree kernel modules; macOS pf,
+# its rules, "block all incoming" and firewall daemons. Microsoft components,
+# device drivers, remote access tools and VPN clients are never touched. A
+# reboot, if still needed, follows the enable_reboot rules.
+# Undo: nr blockers restore all
 local_block_recovery: true
+# When nothing is new since the host last worked, also disable loaded drivers
+# without a trusted signature (Windows test builds) and unsigned out-of-tree
+# kernel modules (Linux), even if they ran for a long time without blocking.
+# false = only what changed since the host last worked.
+local_block_untrusted_drivers: true
 access_ports: [22, 3389]
 protected_components: []         # extra names to never disable, e.g. ["MyAgent*"]
 

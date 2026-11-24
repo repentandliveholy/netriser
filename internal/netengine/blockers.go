@@ -36,9 +36,26 @@ const (
 	StartDisabled = 4
 )
 
-// Component is a Windows service or driver as recorded in the registry.
+// Component kinds on Linux and macOS (Windows services and drivers have an
+// empty kind).
+const (
+	// KindRules: a packet filter ruleset: an nftables or iptables table, the
+	// pf ruleset, a pf anchor, pf itself, macOS "block all incoming".
+	KindRules = "rules"
+	// KindUnit: a systemd unit or launchd daemon.
+	KindUnit = "unit"
+	// KindModule: a loaded kernel module.
+	KindModule = "module"
+	// KindExtension: a macOS network extension; reported, never disabled
+	// (removing one needs the user's approval in System Settings).
+	KindExtension = "extension"
+)
+
+// Component is a Windows service or driver as recorded in the registry, or
+// on Linux and macOS a ruleset, unit, kernel module or extension (Kind).
 type Component struct {
 	Name string `json:"name"`
+	Kind string `json:"kind,omitempty"`
 	// Kernel is true for kernel and file-system drivers.
 	Kernel bool `json:"kernel,omitempty"`
 	Start  int  `json:"start"`
@@ -54,8 +71,37 @@ type Component struct {
 	// Package: installed from a driver package (.inf), as Windows' own
 	// drivers are; drivers created directly with the service manager are not.
 	Package bool `json:"package,omitempty"`
-	// Changed is when the registry entry was last written.
+	// Changed is when the registry entry (or unit file) was last written.
 	Changed time.Time `json:"changed,omitempty"`
+	// Untrusted: a kernel module without a signature built outside the
+	// kernel tree (Linux), the counterpart of a test-signed Windows driver.
+	Untrusted bool `json:"untrusted,omitempty"`
+	// Firewall: a unit or daemon that loads packet filter rules (a known
+	// firewall manager, or its command runs nft, iptables, pfctl and the like).
+	Firewall bool `json:"firewall,omitempty"`
+}
+
+// Unix reports whether the component comes from a Linux or macOS inventory.
+func (c Component) Unix() bool { return c.Kind != "" }
+
+// KindLabel names the kind of a component for messages.
+func (c Component) KindLabel() string {
+	switch c.Kind {
+	case "":
+		if c.Kernel {
+			return "driver"
+		}
+		return "service"
+	case KindRules:
+		return "rules"
+	case KindUnit:
+		return "service"
+	case KindModule:
+		return "module"
+	case KindExtension:
+		return "extension"
+	}
+	return c.Kind
 }
 
 // Signature describes the code signature of a component's image file.
@@ -74,6 +120,14 @@ type Blocker struct {
 	Component
 	Reason string    `json:"reason"`
 	Sig    Signature `json:"signature"`
+	// New: not in the working-state snapshot (Linux and macOS rulesets are
+	// removed when new, put back to their working copy when changed).
+	New bool `json:"new,omitempty"`
+	// RestoreBefore: a changed ruleset goes back to the newest working copy
+	// saved before this time.
+	RestoreBefore time.Time `json:"restore_before,omitempty"`
+	// ReportOnly: shown, never disabled (macOS network extensions).
+	ReportOnly bool `json:"report_only,omitempty"`
 }
 
 // SnapshotEntry is a component seen while the host worked.
@@ -143,9 +197,22 @@ type BlockerPolicy struct {
 
 func (p BlockerPolicy) protected(name string) bool {
 	n := strings.ToLower(name)
+	forms := []string{n}
+	// Linux and macOS names carry a prefix ("unit:sshd.service",
+	// "nft:inet tailscale"); patterns match the bare name too.
+	if i := strings.Index(n, ":"); i >= 0 {
+		bare := n[i+1:]
+		forms = append(forms, bare, strings.TrimSuffix(bare, ".service"))
+		if j := strings.LastIndex(bare, " "); j >= 0 {
+			forms = append(forms, bare[j+1:])
+		}
+	}
 	for _, pat := range p.Protected {
-		if ok, _ := path.Match(strings.ToLower(pat), n); ok {
-			return true
+		pat = strings.ToLower(pat)
+		for _, f := range forms {
+			if ok, _ := path.Match(pat, f); ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -188,7 +255,7 @@ func (p BlockerPolicy) eligible(c Component) bool {
 func BlockerCandidates(comps []Component, p BlockerPolicy) []Component {
 	var out []Component
 	for _, c := range comps {
-		if !p.eligible(c) {
+		if c.Unix() || !p.eligible(c) {
 			continue
 		}
 		if p.Snapshot != nil {
@@ -221,6 +288,18 @@ func BlockerCandidates(comps []Component, p BlockerPolicy) []Component {
 //     which Windows loads only in test mode.
 //   - Then services that depend on a chosen driver (they would start it again).
 func SelectBlockers(comps []Component, sigs map[string]Signature, p BlockerPolicy) []Blocker {
+	var win, unix []Component
+	for _, c := range comps {
+		if c.Unix() {
+			unix = append(unix, c)
+		} else {
+			win = append(win, c)
+		}
+	}
+	return append(selectWindows(win, sigs, p), SelectUnixBlockers(unix, p)...)
+}
+
+func selectWindows(comps []Component, sigs map[string]Signature, p BlockerPolicy) []Blocker {
 	var out []Blocker
 	chosen := map[string]bool{}
 	for _, c := range BlockerCandidates(comps, p) {
@@ -283,6 +362,95 @@ func SelectBlockers(comps []Component, sigs map[string]Signature, p BlockerPolic
 	// User-mode services first: stopping them first lets the driver go.
 	sort.SliceStable(out, func(i, j int) bool { return !out[i].Kernel && out[j].Kernel })
 	return out
+}
+
+// SelectUnixBlockers applies the Linux and macOS rules:
+//
+//   - With a snapshot: rulesets new or changed since the host last worked,
+//     new units and daemons that load packet filter rules, and new kernel
+//     modules without a signature built outside the kernel tree. New
+//     network extensions are reported only.
+//   - Without one: only such untrusted kernel modules.
+//
+// Units come first: stopping a firewall manager removes its rules, so the
+// rulesets left afterwards are what still needs undoing.
+func SelectUnixBlockers(comps []Component, p BlockerPolicy) []Blocker {
+	var out []Blocker
+	for _, c := range comps {
+		if !c.Unix() || c.Start == StartDisabled || !c.Running || p.protected(c.Name) {
+			continue
+		}
+		key := strings.ToLower(c.Name)
+		var prev SnapshotEntry
+		inSnap := false
+		if p.Snapshot != nil {
+			prev, inSnap = p.Snapshot.Components[key]
+		}
+		changed := "new"
+		if inSnap {
+			changed = "changed"
+		}
+		b := Blocker{Component: c, New: !inSnap, RestoreBefore: p.KnownGoodBefore}
+		switch c.Kind {
+		case KindModule:
+			if !c.Untrusted {
+				continue
+			}
+			if p.Snapshot == nil {
+				b.Reason = "kernel module without a signature, built outside the kernel tree"
+			} else if p.knownGood(c) {
+				continue
+			} else {
+				b.Reason = "new since the host last worked; kernel module without a signature"
+			}
+		case KindRules:
+			// A snapshot is taken only while the self-probe passes, so a
+			// ruleset with the same content did not block: no hour of
+			// margin, unlike services that may act later.
+			if p.Snapshot == nil || (inSnap && prev.Image == c.Image && c.Start >= prev.Start) {
+				continue
+			}
+			// Put back the newest copy that differs (all were saved while
+			// the host worked).
+			b.RestoreBefore = time.Time{}
+			b.Reason = changed + " since the host last worked"
+			if inSnap && prev.Start == StartDisabled {
+				b.Reason = "turned on since the host last worked"
+			}
+		case KindUnit:
+			if p.Snapshot == nil || p.knownGood(c) || !c.Firewall {
+				continue
+			}
+			b.Reason = changed + " since the host last worked; loads packet filter rules"
+		case KindExtension:
+			if p.Snapshot == nil || p.knownGood(c) {
+				continue
+			}
+			b.Reason = changed + " network extension since the host last worked; remove it in System Settings if it blocks connections"
+			b.ReportOnly = true
+		default:
+			continue
+		}
+		out = append(out, b)
+	}
+	rank := map[string]int{KindUnit: 0, KindRules: 1, KindModule: 2, KindExtension: 3}
+	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Kind] < rank[out[j].Kind] })
+	return out
+}
+
+// DefaultProtectedUnixComponents are never disabled on Linux and macOS:
+// remote access, VPN and overlay clients, system networking, kernel modules
+// a host may not work without, and NetRiser itself. Patterns match the name
+// without its kind prefix (and without ".service").
+var DefaultProtectedUnixComponents = []string{
+	"netriser", "mesh-watchdog", "com.repentandliveholy.netriser*", "*netriser*",
+	"ssh", "sshd", "sshd@*", "ssh.socket", "com.openssh.sshd", "dropbear", "xrdp*", "x11vnc*", "vncserver*", "com.apple.screensharing*",
+	"tailscale*", "ts-*", "zerotier*", "netbird*", "nebula*", "yggdrasil*", "wg-quick@*", "wireguard*", "wg*",
+	"openvpn*", "strongswan*", "ipsec", "charon*", "mullvad*", "nordvpn*", "protonvpn*", "expressvpn*", "cloudflare-warp*", "warp-svc",
+	"anydesk*", "teamviewer*", "rustdesk*", "com.anydesk*", "com.teamviewer*",
+	"networkmanager*", "systemd-networkd*", "systemd-resolved*", "networking", "dhcpcd*", "dhclient*", "wpa_supplicant*", "netplan*",
+	"docker*", "containerd*", "kube*", "k3s*", "libvirtd*", "lxd*", "incus*",
+	"nvidia*", "zfs", "spl", "vbox*", "vmw*", "vmmon", "vmnet", "amdgpu", "i915", "nouveau", "xe",
 }
 
 // DefaultProtectedComponents are never disabled: remote access, the VPN
@@ -378,6 +546,10 @@ type PortProbe struct {
 type LocalAccessResult struct {
 	Address string      `json:"address,omitempty"`
 	Probes  []PortProbe `json:"probes,omitempty"`
+	// Unproven: ports that failed but never passed the self-probe on this
+	// host (Linux, macOS); a firewall that only admits them from elsewhere
+	// is not a block, so they are not counted.
+	Unproven []PortProbe `json:"unproven,omitempty"`
 }
 
 // Tested reports whether any listening port was tried.
@@ -463,6 +635,9 @@ func TestLocalAccess(ctx context.Context, ip string, ports []int, listening map[
 	return res
 }
 
+// ListensOn reports whether a port bound to addrs accepts connections to ip.
+func ListensOn(addrs []string, ip string) bool { return listensOn(addrs, ip) }
+
 func listensOn(addrs []string, ip string) bool {
 	for _, a := range addrs {
 		if a == "0.0.0.0" || a == ip || ((a == "::" || a == "[::]") && strings.Contains(ip, ":")) {
@@ -512,7 +687,7 @@ func ParseNetstatListening(out string) map[int][]string {
 }
 
 // BlockerEngine is implemented by engines that can inspect and disable
-// local components (Windows).
+// local components (Windows, Linux, macOS).
 type BlockerEngine interface {
 	LocalListener
 	// Components lists services and drivers.
@@ -520,8 +695,9 @@ type BlockerEngine interface {
 	// Signatures checks the image files of the given components, keyed by
 	// lower-case component name.
 	Signatures(ctx context.Context, comps []Component) (map[string]Signature, error)
-	// DisableComponent sets the component to Disabled and stops it.
-	DisableComponent(ctx context.Context, c Component) ActionResult
+	// DisableComponent sets the component to Disabled and stops it (on
+	// Linux and macOS: removes a ruleset or puts back its working copy).
+	DisableComponent(ctx context.Context, b Blocker) ActionResult
 	// RestoreComponent sets the start type back; it does not start it.
 	RestoreComponent(ctx context.Context, name string, start int) ActionResult
 }
@@ -541,4 +717,19 @@ func StartName(start int) string {
 		return "disabled"
 	}
 	return strconv.Itoa(start)
+}
+
+// LocalProber tests the host's own ports from outside its loopback path.
+// Linux and macOS accept connections to their own address over loopback,
+// which most firewalls let through, so a plain connection would miss a
+// block; these engines send the connection over a temporary virtual
+// Ethernet pair instead.
+type LocalProber interface {
+	ProbeLocal(ctx context.Context, ip string, ports []int, timeout time.Duration) ([]PortProbe, error)
+}
+
+// WorkingStateSaver keeps copies of the rulesets of a working host, so a
+// ruleset that changed before a block can be put back.
+type WorkingStateSaver interface {
+	SaveWorkingState(ctx context.Context, now time.Time) error
 }

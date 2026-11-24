@@ -152,6 +152,9 @@ type installer struct {
 	pathBefore string
 	pathType   uint32
 	pathSet    bool
+	// untrusted is the answer about drivers without a trusted signature;
+	// nil when not asked.
+	untrusted *bool
 }
 
 // Run installs NetRiser and returns the process exit code.
@@ -242,6 +245,7 @@ func (in *installer) run() int {
 	p.say("  " + p.t("inst_cfg", in.l.config))
 
 	// Questions first, before anything is stopped or changed.
+	in.askUntrusted()
 	rescued, needRestart := in.rescue()
 	recommended := true
 	if !rescued {
@@ -285,6 +289,22 @@ func (in *installer) run() int {
 	return 0
 }
 
+// askUntrusted asks whether local block recovery may also disable drivers
+// without a trusted signature when nothing new is found. A configuration that
+// already turned it off is kept without asking.
+func (in *installer) askUntrusted() {
+	cfg, err := loadConfig(in.l.config)
+	if err != nil || !cfg.LocalBlockRecovery || !cfg.LocalBlockUntrustedDrivers {
+		return
+	}
+	p := in.p
+	if p.ok && !p.yes {
+		p.say("  " + p.t("inst_untrusted_explain"))
+	}
+	v := p.ask("  "+p.t("inst_untrusted_q"), true)
+	in.untrusted = &v
+}
+
 // rescue looks for software that blocks connections on this computer and
 // offers to disable it. It reports whether it asked, and whether a restart
 // is needed to unload what was disabled.
@@ -295,6 +315,9 @@ func (in *installer) rescue() (asked, needRestart bool) {
 	if err != nil {
 		p.warn("inst_scan_failed", err)
 		return false, false
+	}
+	if in.untrusted != nil {
+		cfg.LocalBlockUntrustedDrivers = *in.untrusted
 	}
 	w := watchdog.NewWatchdog(cfg, false)
 	ctx := context.Background()
@@ -440,6 +463,10 @@ func (in *installer) apply(recommended bool) error {
 
 	p.step("inst_s5", l.config)
 	args := []string{"--config", l.config, "setup", "--lang=" + p.lang, "--no-restart"}
+	if in.untrusted != nil && !*in.untrusted {
+		// Asked only while it was on, so only "no" changes the file.
+		args = append(args, "--untrusted-drivers=false")
+	}
 	if recommended || !p.ok {
 		args = append(args, "--non-interactive")
 	}

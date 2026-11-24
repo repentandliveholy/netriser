@@ -43,6 +43,11 @@ var installCatalog = map[string]msg{
 		"Rien à désactiver ; après l'installation NetRiser continue de le vérifier."},
 	"inst_skip_disable": {"Not disabled. To disable later: nr blockers disable", "Не отключено. Отключить позже: nr blockers disable", "Non désactivé. Pour le désactiver plus tard : nr blockers disable"},
 	"inst_scan_failed":  {"Could not check the services and drivers: %s", "Не удалось проверить службы и драйверы: %s", "Impossible de vérifier les services et les pilotes : %s"},
+	"inst_untrusted_explain": {
+		"If connections stop again later and nothing new is found on this computer, NetRiser can also disable drivers without a trusted signature (test builds, loaded only in Windows test mode), even ones that worked for a long time. n = disable only what changed since the computer last worked.",
+		"Если подключения снова пропадут, а нового на компьютере ничего не найдено, NetRiser может отключить и драйверы без доверенной подписи (тестовые сборки, которые Windows загружает только в тестовом режиме), даже давно работающие. n = отключать только то, что изменилось с тех пор, как компьютер последний раз работал.",
+		"Si les connexions s'arrêtent de nouveau et que rien de nouveau n'est trouvé sur cet ordinateur, NetRiser peut aussi désactiver les pilotes sans signature approuvée (versions de test, chargées seulement en mode test de Windows), même ceux qui fonctionnent depuis longtemps. n = ne désactiver que ce qui a changé depuis la dernière fois que l'ordinateur fonctionnait."},
+	"inst_untrusted_q": {"Allow this (recommended)?", "Разрешить (рекомендуется)?", "L'autoriser (recommandé) ?"},
 	"inst_settings_new_q": {
 		"Use the recommended settings (recovery on, emergency reboot off, automatic updates on)? n = answer all setup questions",
 		"Использовать рекомендуемые настройки (восстановление включено, аварийная перезагрузка выключена, автообновление включено)? n = ответить на все вопросы настройки",
@@ -67,8 +72,4 @@ var installCatalog = map[string]msg{
 	"inst_restart_later":   {"Restart Windows later to finish: shutdown /r /t 0", "Перезапустите Windows позже, чтобы закончить: shutdown /r /t 0", "Redémarrez Windows plus tard pour terminer : shutdown /r /t 0"},
 	"inst_press_enter":     {"Press Enter to close this window.", "Нажмите Enter, чтобы закрыть окно.", "Appuyez sur Entrée pour fermer cette fenêtre."},
 	"inst_yn":              {"[Y/n · Enter = yes]", "[Y/n · Enter = да]", "[Y/n · Entrée = oui]"},
-	"inst_other_os": {
-		"netriser install runs on Windows; on Linux and macOS use: curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh",
-		"netriser install работает в Windows; в Linux и macOS используйте: curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh",
-		"netriser install fonctionne sous Windows ; sous Linux et macOS utilisez : curl -fsSL https://netriser.repentandliveholy.org/install.sh | sh"},
 }

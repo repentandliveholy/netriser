@@ -40,6 +40,7 @@ type cliOptions struct {
 	installObserve    string
 	installVPNBypass  string
 	installFullTunnel string
+	installUntrusted  string
 	lang              string
 	nonInteractive    bool
 	noRestart         bool
@@ -67,6 +68,8 @@ func parseCLIArgs(args []string) cliOptions {
 			opts.lang = strings.TrimPrefix(arg, "--lang=")
 		case strings.HasPrefix(arg, "--full-tunnel="):
 			opts.installFullTunnel = strings.TrimPrefix(arg, "--full-tunnel=")
+		case strings.HasPrefix(arg, "--untrusted-drivers="):
+			opts.installUntrusted = strings.TrimPrefix(arg, "--untrusted-drivers=")
 		case arg == "-y" || arg == "--yes":
 			opts.yes = true
 		case arg == "--double-click":
@@ -125,8 +128,8 @@ Usage:
   netriser [flags] <command> [subcommand]
 
 Commands:
-  install            Install or update NetRiser from this file (Windows; works
-                     offline). Double-clicking netriser.exe does the same.
+  install            Install or update NetRiser from this file; works offline
+                     (sudo on Linux and macOS). Double-clicking netriser.exe does the same.
   setup              Answer the installation questions again and apply them
   start              Start background watchdog service
   stop               Stop background watchdog service
@@ -152,7 +155,7 @@ Commands:
   service <cmd>      Manage OS service (install, uninstall, start, stop, restart, status)
   apply-policy       Enforce management policy routing (Table 200 on Linux)
   remove-policy      Remove custom management policy routing rules
-  blockers [cmd]     Software on this host that blocks connections (Windows):
+  blockers [cmd]     Software or firewall rules on this host that block connections:
                      scan (default), disable [--yes], restore <name|all>
   reset              Reset failure counter (preserves quarantine history)
   version            Print version information
@@ -171,6 +174,8 @@ Flags:
   --lang=en|ru|fr       Language of the setup questions (with 'setup')
   --full-tunnel=bool    Whether this host routes all traffic through a VPN; false removes
                         any VPN or exit node that takes over the default route (with 'setup')
+  --untrusted-drivers=bool  Local block: when nothing is new, also disable drivers without
+                        a trusted signature (with 'setup')
   --non-interactive     Ask no questions; apply only explicit settings (with 'setup')
   --save-answers=PATH   Ask the questions and save the answers without applying them (with 'setup')
   --answers=PATH        Apply previously saved answers without asking (with 'setup')

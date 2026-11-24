@@ -212,7 +212,8 @@ ConvertTo-Json -Compress -InputObject @($out)`
 // Windows), then stops the component. A user-mode service that does not stop
 // within 15 seconds has its process ended; a driver that cannot be unloaded
 // stays loaded until the next restart.
-func (e *WindowsEngine) DisableComponent(ctx context.Context, c Component) ActionResult {
+func (e *WindowsEngine) DisableComponent(ctx context.Context, b Blocker) ActionResult {
+	c := b.Component
 	act := ActionResult{Type: ActionDisableComponent, Target: c.Name, Status: ActionExecuted}
 	if err := setStart(c.Name, StartDisabled); err != nil {
 		act.Status, act.Error = ActionFailed, err.Error()

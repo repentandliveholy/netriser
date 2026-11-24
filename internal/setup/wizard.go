@@ -474,6 +474,17 @@ func (w *wizard) recovery(ctx context.Context) error {
 		}
 	}
 
+	if UntrustedRule(w.opts.GOOS) && w.cur.LocalBlockRecovery {
+		if w.opts.GOOS == "linux" {
+			p.explain(p.t("lbt_explain_linux"))
+		} else {
+			p.explain(p.t("lbt_explain"))
+		}
+		if _, err := w.yesNo("local_block_untrusted_drivers", p.t("lbt_q"), w.cur.LocalBlockUntrustedDrivers, ptr(true)); err != nil {
+			return err
+		}
+	}
+
 	if !w.explicit("management_interface") {
 		p.explain(p.t("uplink_explain"))
 		if iface, gateway := w.opts.Uplink(ctx, w.cur); iface != "" {
@@ -512,6 +523,15 @@ func (w *wizard) recovery(ctx context.Context) error {
 	return nil
 }
 
+// LocalBlockSupported reports whether local block recovery runs on goos.
+// UntrustedRule reports whether local block recovery on goos knows untrusted
+// drivers (Windows test-signed drivers, Linux unsigned out-of-tree modules).
+func UntrustedRule(goos string) bool { return goos == "windows" || goos == "linux" }
+
+func LocalBlockSupported(goos string) bool {
+	return goos == "windows" || goos == "linux" || goos == "darwin"
+}
+
 func (w *wizard) updates() error {
 	w.section("sec_updates")
 	if config.IsLegacyUpdateURL(w.cur.UpdateURL) {
@@ -526,7 +546,7 @@ func (w *wizard) updates() error {
 var summaryOrder = []string{
 	"language", "observation_mode", "canary_targets", "full_tunnel",
 	"allowed_default_interfaces", "allow_vpn_bypass", "mesh_canaries", "overlays", "allow_route_sanitation",
-	"allow_service_quarantine", "allow_network_restart", "allow_dns_recovery",
+	"allow_service_quarantine", "allow_network_restart", "allow_dns_recovery", "local_block_untrusted_drivers",
 	"management_interface", "enable_reboot", "reboot_min_outage_sec", "auto_update", "update_url",
 }
 

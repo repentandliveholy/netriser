@@ -76,6 +76,7 @@ func TestSetupAnswersAreApplied(t *testing.T) {
 		"corp-vpn.service",             // services
 		"n",                            // add another
 		"", "", "", "",                 // stages 1-3, dns
+		"n",        // untrusted kernel modules
 		"eth1",     // uplink
 		"y", "600", // reboot, outage
 		"n", // auto update
@@ -92,7 +93,7 @@ func TestSetupAnswersAreApplied(t *testing.T) {
 	}
 	if cfg.ObservationMode || cfg.CanaryTargets[1] != "192.0.2.54:53" || cfg.MeshCanaries[0] != "10.0.0.1:22" ||
 		cfg.AllowedDefaultInterfaces[0] != "wg0" || !cfg.AllowVPNBypass || cfg.FullTunnel == nil || !*cfg.FullTunnel || cfg.Overlays[0].Services[0] != "corp-vpn.service" ||
-		cfg.ManagementInterface != "eth1" || !cfg.EnableReboot || cfg.RebootMinOutageSec != 600 || cfg.AutoUpdate {
+		cfg.ManagementInterface != "eth1" || cfg.LocalBlockUntrustedDrivers || !cfg.EnableReboot || cfg.RebootMinOutageSec != 600 || cfg.AutoUpdate {
 		t.Fatalf("answers not applied: %+v\n%s", cfg, out)
 	}
 	if !strings.Contains(flat(out.String()), "the VPN that carries all traffic is stopped") {
@@ -310,5 +311,39 @@ func TestSummaryListsEveryAnswerAndReplacesRetiredUpdateHost(t *testing.T) {
 	cfg, _, err := config.Apply(path, values)
 	if err != nil || cfg.UpdateURL != config.DefaultUpdateURL {
 		t.Fatalf("retired update host kept: %q %v", cfg.UpdateURL, err)
+	}
+}
+
+// Where local block recovery runs, setup asks about drivers without a
+// trusted signature; Enter keeps them in (recommended), and the question
+// is not asked elsewhere.
+func TestSetupAsksAboutUntrustedDrivers(t *testing.T) {
+	for _, goos := range []string{"windows", "linux", "darwin"} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		opts, out := stubOpts(path, strings.Repeat("\n", 40), true)
+		opts.GOOS = goos
+		values, err := Run(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", goos, err, out)
+		}
+		asked := strings.Contains(flat(out.String()), "without a trusted signature")
+		if asked != UntrustedRule(goos) {
+			t.Fatalf("%s: asked=%v\n%s", goos, asked, out)
+		}
+		if asked && values["local_block_untrusted_drivers"] != true {
+			t.Fatalf("%s: Enter did not keep untrusted drivers on: %v", goos, values)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	opts, _ := stubOpts(path, strings.Repeat("\n", 40), true)
+	opts.GOOS = "windows"
+	opts.Explicit["local_block_untrusted_drivers"] = false
+	values, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.Apply(path, values)
+	if err != nil || cfg.LocalBlockUntrustedDrivers {
+		t.Fatalf("explicit false not applied: %v %+v", err, values)
 	}
 }

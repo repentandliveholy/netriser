@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -38,7 +39,7 @@ func runBlockers(ctx context.Context, cfg *config.Config, opts cliOptions) int {
 			printBlockerScan(scan)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Examining services and drivers failed:", err)
+			fmt.Fprintln(os.Stderr, "Examining services, drivers and rules failed:", err)
 			return 1
 		}
 		return 0
@@ -57,7 +58,7 @@ func runBlockers(ctx context.Context, cfg *config.Config, opts cliOptions) int {
 		scan, err := w.ScanBlockers(ctx)
 		printBlockerScan(scan)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Examining services and drivers failed:", err)
+			fmt.Fprintln(os.Stderr, "Examining services, drivers and rules failed:", err)
 			return 1
 		}
 		if len(scan.Candidates) == 0 {
@@ -81,9 +82,9 @@ func runBlockers(ctx context.Context, cfg *config.Config, opts cliOptions) int {
 		after, _ := w.ScanBlockers(ctx)
 		switch {
 		case after == nil || !after.Access.Tested():
-			fmt.Println("Restart Windows to make sure the disabled components are unloaded: shutdown /r /t 0")
+			fmt.Println("Restart to make sure the disabled components are unloaded: " + restartHint())
 		case after.Access.Blocked():
-			fmt.Printf("This host still cannot connect to its own ports (%s). The disabled drivers stay loaded until Windows restarts: shutdown /r /t 0\n", after.Access.Summary())
+			fmt.Printf("This host still cannot connect to its own ports (%s). Disabled drivers and kernel modules stay loaded until a restart: %s\n", after.Access.Summary(), restartHint())
 		default:
 			fmt.Printf("Local access works again (%s).\n", after.Access.Summary())
 		}
@@ -120,7 +121,12 @@ func runBlockers(ctx context.Context, cfg *config.Config, opts cliOptions) int {
 			fmt.Println("Nothing was disabled by NetRiser.")
 			return 0
 		}
-		fmt.Println("They start again when Windows restarts (or with: sc start <name>). If one of them blocked this host, NetRiser disables it again; to keep it, add it to protected_components.")
+		if runtime.GOOS == "windows" {
+			fmt.Println("They start again when Windows restarts (or with: sc start <name>).")
+		} else {
+			fmt.Println("Rules are loaded again now; services and kernel modules start again at the next restart.")
+		}
+		fmt.Println("If one of them blocked this host, NetRiser disables it again; to keep it, add it to protected_components.")
 		return 0
 	}
 	fmt.Fprintln(os.Stderr, "Usage: netriser blockers [scan|disable [--yes]|restore <name ...|all>]")
@@ -132,21 +138,43 @@ func printBlockerScan(scan *watchdog.BlockerScan) {
 		return
 	}
 	if !scan.Supported {
-		fmt.Println("Local block recovery is available on Windows only.")
+		fmt.Println("Local block recovery is not available on this system.")
 		return
 	}
 	switch {
+	case !scan.Access.Tested() && len(scan.Access.Unproven) > 0:
+		fmt.Printf("Local access:  nothing counted yet on %s (see below)\n", scan.Access.Address)
 	case !scan.Access.Tested():
-		fmt.Println("Local access:  not tested (none of access_ports listens on this host's address)")
+		if runtime.GOOS == "windows" {
+			fmt.Println("Local access:  not tested (none of access_ports listens on this host's address)")
+		} else {
+			fmt.Println("Local access:  not tested (none of access_ports listens on this host's address, or the check needs root: sudo)")
+		}
 	case scan.Access.Blocked():
 		fmt.Printf("Local access:  BLOCKED on %s (%s): something on this host blocks connections\n", scan.Access.Address, scan.Access.Summary())
 	default:
 		fmt.Printf("Local access:  ok on %s (%s)\n", scan.Access.Address, scan.Access.Summary())
 	}
+	if len(scan.Access.Unproven) > 0 {
+		u := netengine.LocalAccessResult{Probes: scan.Access.Unproven}
+		fmt.Printf("Not counted:   %s (never accepted the self-probe here; a firewall that admits them only from elsewhere is not a block)\n", u.Summary())
+	}
 	if scan.Snapshot.IsZero() {
-		fmt.Println("Snapshot:      none yet (taken while the host works); only drivers without a trusted signature are considered")
+		switch runtime.GOOS {
+		case "windows":
+			fmt.Println("Snapshot:      none yet (taken while the host works); only drivers without a trusted signature are considered")
+		case "linux":
+			fmt.Println("Snapshot:      none yet (taken while the host works); only unsigned out-of-tree kernel modules are considered")
+		default:
+			fmt.Println("Snapshot:      none yet (taken while the host works); nothing is chosen before it")
+		}
 	} else {
 		fmt.Printf("Snapshot:      working state from %s\n", scan.Snapshot.Local().Format("2006-01-02 15:04"))
+		if scan.Untrusted {
+			fmt.Println("Rule:          what is new since then; if nothing is, drivers and kernel modules without a trusted signature")
+		} else {
+			fmt.Println("Rule:          only what is new since then (local_block_untrusted_drivers: false)")
+		}
 	}
 	if !scan.Enabled {
 		fmt.Println("Recovery:      off (local_block_recovery: false); NetRiser only reports")
@@ -156,20 +184,22 @@ func printBlockerScan(scan *watchdog.BlockerScan) {
 	} else {
 		fmt.Println("Would disable:")
 		for _, b := range scan.Candidates {
-			kind := "service"
-			if b.Kernel {
-				kind = "driver"
+			start := netengine.StartName(b.Start)
+			if b.Unix() && b.Kind != netengine.KindUnit {
+				start = "-"
 			}
-			signer := b.Sig.Signer
-			if signer == "" {
-				signer = "unsigned"
+			fmt.Printf("  %-22s %-9s %-9s %s\n", b.Name, b.KindLabel(), start, b.Reason)
+			if !b.Unix() {
+				signer := b.Sig.Signer
+				if signer == "" {
+					signer = "unsigned"
+				}
+				if !b.Sig.Valid && b.Sig.Status != "" {
+					signer += ", " + b.Sig.Status
+				}
+				fmt.Printf("  %-22s signer: %s\n", "", signer)
 			}
-			if !b.Sig.Valid && b.Sig.Status != "" {
-				signer += ", " + b.Sig.Status
-			}
-			fmt.Printf("  %-22s %-7s %-9s %s\n", b.Name, kind, netengine.StartName(b.Start), b.Reason)
-			fmt.Printf("  %-22s signer: %s\n", "", signer)
-			if b.Image != "" {
+			if b.Image != "" && !strings.HasPrefix(b.Image, "sha256:") {
 				fmt.Printf("  %-22s image:  %s\n", "", b.Image)
 			}
 		}
@@ -177,9 +207,20 @@ func printBlockerScan(scan *watchdog.BlockerScan) {
 	if len(scan.Disabled) > 0 {
 		fmt.Println("Disabled by NetRiser (undo: nr blockers restore all):")
 		for _, d := range scan.Disabled {
-			fmt.Printf("  %-22s was %-9s since %s  %s\n", d.Name, netengine.StartName(d.PreviousStart), d.DisabledAt.Local().Format("2006-01-02 15:04"), d.Reason)
+			if runtime.GOOS == "windows" {
+				fmt.Printf("  %-22s was %-9s since %s  %s\n", d.Name, netengine.StartName(d.PreviousStart), d.DisabledAt.Local().Format("2006-01-02 15:04"), d.Reason)
+			} else {
+				fmt.Printf("  %-22s since %s  %s\n", d.Name, d.DisabledAt.Local().Format("2006-01-02 15:04"), d.Reason)
+			}
 		}
 	}
+}
+
+func restartHint() string {
+	if runtime.GOOS == "windows" {
+		return "shutdown /r /t 0"
+	}
+	return "sudo shutdown -r now"
 }
 
 // confirm asks a yes/no question on the terminal; Enter means yes. asked is

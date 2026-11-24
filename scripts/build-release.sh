@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 DIST_DIR="${DIST_DIR:-${SCRIPT_DIR}/dist}"
 DIST_BIN="$DIST_DIR/bin"
-VERSION="${VERSION:-1.3.5}"
+VERSION="${VERSION:-1.3.6}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$VERSION$COMMIT" in *[!a-zA-Z0-9._+-]*) echo "Invalid release identifier" >&2; exit 2 ;; esac
@@ -66,7 +66,7 @@ cat > "$DIST_DIR/version.json" <<EOF
   "commit": "${COMMIT}",
   "build_time": "${BUILD_TIME}",
   "min_version": "1.0.0",
-  "release_notes": "NetRiser 1.3.5: on Windows, software on the host that blocks connections (for example a test-mode firewall driver) is found and disabled: the host tests SSH/RDP against its own address, and when two checks fail it disables the drivers and services that are new since it last worked, or, without that record, untrusted test-signed drivers. Undo with nr blockers restore all. On 2026-11-24 this brought back a workstation that restarting Windows had not fixed. The Windows .exe installs itself (double-click, works offline from a USB drive). New installations recover instead of observing. The Windows service restart after an update waits for the service to stop.",
+  "release_notes": "NetRiser 1.3.6: local block recovery now also runs on Linux and macOS. The host tests SSH against its own address through a temporary virtual Ethernet pair (so loopback rules do not hide a block), and when two checks fail it undoes what is new since it last worked: Linux nftables/iptables tables (new ones removed, changed ones put back to the working copy), new firewall services and unsigned out-of-tree kernel modules; macOS pf, its rules, block-all-incoming and firewall daemons. On Windows, a test-signed driver that ran for hours before blocking is now caught too (new setting local_block_untrusted_drivers, asked in setup and the .exe installer). Linux and macOS install offline from the downloaded file: sudo ./netriser-<os>-<arch> install. Undo with nr blockers restore all.",
   "files": {
     "linux/amd64": {"filename":"netriser-linux-amd64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-amd64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-amd64"},
     "linux/arm64": {"filename":"netriser-linux-arm64","sha256":"$(hash_file "$DIST_BIN/netriser-linux-arm64")","url":"${RELEASE_PREFIX}/bin/netriser-linux-arm64"},

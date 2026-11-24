@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.6 (not released yet)
+## 1.3.6
 
 Local block recovery on Linux and macOS
 - The same recovery as on Windows. A connection to the host's own address
